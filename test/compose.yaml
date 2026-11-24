@@ -1,0 +1,23 @@
+services:
+  checkoutservice-tests:
+    image: golang:1.27.1-alpine
+    working_dir: /workspace/src/checkoutservice
+    volumes:
+      - ..:/workspace
+    command:
+      - go
+      - test
+      - -overlay=/workspace/test/checkoutservice/overlay.json
+      - ./...
+      - -coverpkg=./...
+      - -coverprofile=/workspace/test/checkoutservice/checkoutservice-coverage.out
+      - -covermode=atomic
+  checkoutservice-mutation:
+    image: golang:1.27.1-alpine
+    working_dir: /workspace/src/checkoutservice
+    volumes:
+      - ..:/workspace
+    command:
+      - sh
+      - -c
+      - go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0 && gremlins unleash

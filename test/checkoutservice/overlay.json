@@ -1,0 +1,5 @@
+{
+  "Replace": {
+    "/workspace/src/checkoutservice/main_test.go": "/workspace/test/checkoutservice/main_test.go"
+  }
+}
