@@ -27,3 +27,8 @@ pkg/
 release/wi-kubernetes-manifests.yaml
 vendor/
 gha-creds-*.json
+
+# cartservice component tests / mutation testing outputs
+StrykerOutput/
+TestResults/
+coverage/

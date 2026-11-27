@@ -1,0 +1,9 @@
+{
+  "stryker-config": {
+    "project": "cartservice.csproj",
+    "mutate": [ "**/cartstore/RedisCartStore.cs" ],
+    "test-case-filter": "Category!=Defect",
+    "reporters": [ "cleartext", "html", "json" ],
+    "thresholds": { "high": 90, "low": 60, "break": 0 }
+  }
+}
