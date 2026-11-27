@@ -1,0 +1,92 @@
+name: "Component-Level Verification (Coverage & Mutation)"
+
+on:
+  push:
+    branches-ignore:
+      - 'gh-pages'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shippingservice-verification:
+    name: "ShippingService (Go Tests, Coverage & Gremlins)"
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+
+      - name: Run Unit Tests & Coverage
+        working-directory: src/shippingservice
+        run: |
+          mkdir -p reports
+          go test -v -coverprofile=reports/coverage.out . | tee reports/test-results.txt
+          go tool cover -func=reports/coverage.out | tee reports/coverage-summary.txt
+
+      - name: Install Gremlins
+        run: go install github.com/go-gremlins/gremlins/cmd/gremlins@latest
+
+      - name: Run Mutation Testing (Gremlins)
+        working-directory: src/shippingservice
+        run: |
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          gremlins unleash | tee reports/gremlins-report.txt
+
+      - name: Upload ShippingService Reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shippingservice-verification-reports
+          path: src/shippingservice/reports/
+
+  recommendationservice-verification:
+    name: "RecommendationService (Pytest, Coverage & Mutmut)"
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Dependencies
+        working-directory: src/recommendationservice
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov 'mutmut<3'
+
+      - name: Run Unit Tests & Coverage
+        working-directory: src/recommendationservice
+        run: |
+          mkdir -p reports
+          pytest --cov=. --cov-report=term-missing --cov-report=xml:reports/coverage.xml -v | tee reports/pytest-coverage.txt
+
+      - name: Run Mutation Testing (Mutmut)
+        working-directory: src/recommendationservice
+        run: |
+          mutmut run --paths-to-mutate=recommendation_server.py | tee reports/mutmut-run.txt || true
+          mutmut results | tee reports/mutmut-results.txt
+
+      - name: Upload RecommendationService Reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: recommendationservice-verification-reports
+          path: src/recommendationservice/reports/
