@@ -43,7 +43,7 @@ jobs:
         working-directory: src/shippingservice
         run: |
           export PATH="$PATH:$(go env GOPATH)/bin"
-          gremlins unleash | tee reports/gremlins-report.txt
+          gremlins unleash --workers=2 --timeout-coefficient=30 | tee reports/gremlins-report.txt
 
       - name: Generate ShippingService Executive HTML Report
         run: |
