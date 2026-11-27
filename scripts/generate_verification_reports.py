@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Genera reportes ejecutivos HTML individuales y consolidado desde salidas de CI."""
+"""Genera reportes ejecutivos HTML individuales y consolidado desde artefactos de CI."""
 
 from __future__ import annotations
 
@@ -124,141 +124,6 @@ def _read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
 
 
-def parse_shipping(report_dir: Path) -> dict[str, Any]:
-    cov_text = _read_text(report_dir / "coverage-summary.txt")
-    grem_text = _read_text(report_dir / "gremlins-report.txt")
-    test_text = _read_text(report_dir / "test-results.txt")
-
-    functions: list[dict[str, Any]] = []
-    total_cov = "0.0%"
-    for line in cov_text.splitlines():
-        m_total = re.match(r"^total:\s+\(statements\)\s+([\d.]+%)", line.strip())
-        if m_total:
-            total_cov = m_total.group(1)
-            continue
-        m_fn = re.match(r"^(.+?):(\d+):\s+(\S+)\s+([\d.]+)%", line.strip())
-        if m_fn:
-            short_file = m_fn.group(1).rsplit("/", 1)[-1]
-            functions.append({
-                "label": f"{short_file}:{m_fn.group(3)}",
-                "pct": float(m_fn.group(4)),
-            })
-
-    def _grem_int(pattern: str) -> int:
-        m = re.search(pattern, grem_text)
-        return int(m.group(1)) if m else 0
-
-    def _grem_str(pattern: str, default: str = "0.00%") -> str:
-        m = re.search(pattern, grem_text)
-        return m.group(1) if m else default
-
-    killed = _grem_int(r"Killed:\s*(\d+)")
-    lived = _grem_int(r"Lived:\s*(\d+)")
-    not_covered = _grem_int(r"Not covered:\s*(\d+)")
-    timed_out = _grem_int(r"Timed out:\s*(\d+)")
-    efficacy = _grem_str(r"Test efficacy:\s*([\d.]+%)")
-    mut_cov = _grem_str(r"Mutator coverage:\s*([\d.]+%)")
-
-    passed_tests = len(re.findall(r"--- PASS:", test_text))
-    failed_tests = len(re.findall(r"--- FAIL:", test_text))
-    overall_pass = "FAIL" not in test_text and ("PASS" in test_text or passed_tests > 0)
-
-    return {
-        "total_cov": total_cov,
-        "functions": functions,
-        "killed": killed,
-        "lived": lived,
-        "not_covered": not_covered,
-        "timed_out": timed_out,
-        "efficacy": efficacy,
-        "mut_cov": mut_cov,
-        "passed_tests": passed_tests,
-        "failed_tests": failed_tests,
-        "overall_pass": overall_pass,
-    }
-
-
-def parse_recommendation(report_dir: Path) -> dict[str, Any]:
-    cov_text = _read_text(report_dir / "pytest-coverage.txt")
-    mut_res_text = _read_text(report_dir / "mutmut-results.txt")
-    mut_run_text = _read_text(report_dir / "mutmut-run.txt")
-
-    modules: list[dict[str, Any]] = []
-    total_cov = "0%"
-    total_stmts = 0
-    total_miss = 0
-    for line in cov_text.splitlines():
-        m_tot = re.match(r"^TOTAL\s+(\d+)\s+(\d+)\s+(\d+%)", line.strip())
-        if m_tot:
-            total_stmts = int(m_tot.group(1))
-            total_miss = int(m_tot.group(2))
-            total_cov = m_tot.group(3)
-            continue
-        m_mod = re.match(r"^([\w./\\-]+\.py)\s+(\d+)\s+(\d+)\s+(\d+)%", line.strip())
-        if m_mod:
-            modules.append({
-                "name": m_mod.group(1),
-                "stmts": int(m_mod.group(2)),
-                "miss": int(m_mod.group(3)),
-                "pct": int(m_mod.group(4)),
-            })
-
-    tests: list[dict[str, str]] = []
-    for line in cov_text.splitlines():
-        m_t = re.match(r"^tests/[\w_]+\.py::(\S+)\s+(PASSED|FAILED|SKIPPED)", line.strip())
-        if m_t:
-            tests.append({"name": m_t.group(1), "status": m_t.group(2)})
-
-    m_summary = re.search(r"(\d+)\s+passed", cov_text)
-    passed_count = int(m_summary.group(1)) if m_summary else len([t for t in tests if t["status"] == "PASSED"])
-    m_failed = re.search(r"(\d+)\s+failed", cov_text)
-    failed_count = int(m_failed.group(1)) if m_failed else 0
-
-    # Parse mutmut counts from last progress line in mutmut-run.txt
-    killed = 0
-    survived = 0
-    timeout = 0
-    suspicious = 0
-    skipped = 0
-    progress_matches = re.findall(
-        r"(\d+)/(\d+)\s+🎉\s*(\d+)\s+⏰\s*(\d+)\s+🤔\s*(\d+)\s+🙁\s*(\d+)\s+🔇\s*(\d+)",
-        mut_run_text,
-    )
-    if progress_matches:
-        _, total_m, k, to, su, sv, sk = progress_matches[-1]
-        total_mutants = int(total_m)
-        killed, timeout, suspicious, survived, skipped = int(k), int(to), int(su), int(sv), int(sk)
-    else:
-        m_surv = re.search(r"Survived.*?\((\d+)\)", mut_res_text)
-        survived = int(m_surv.group(1)) if m_surv else 0
-        total_mutants = survived
-
-    killed_pct = (killed / total_mutants * 100.0) if total_mutants > 0 else 0.0
-
-    survived_ids = ""
-    for line in mut_res_text.splitlines():
-        if re.match(r"^[\d,\s-]+$", line.strip()) and line.strip():
-            survived_ids = line.strip()
-
-    return {
-        "total_cov": total_cov,
-        "total_stmts": total_stmts,
-        "total_miss": total_miss,
-        "modules": modules,
-        "tests": tests,
-        "passed_count": passed_count,
-        "failed_count": failed_count,
-        "killed": killed,
-        "survived": survived,
-        "timeout": timeout,
-        "suspicious": suspicious,
-        "skipped": skipped,
-        "total_mutants": total_mutants,
-        "killed_pct": killed_pct,
-        "survived_ids": survived_ids,
-    }
-
-
 def _bar_color(pct: float) -> str:
     if pct >= 80:
         return "var(--emerald)"
@@ -281,101 +146,270 @@ def _donut_svg(pct: float, label: str, sublabel: str, track_color: str = "#e2e8f
     """
 
 
-def render_shipping_section(data: dict[str, Any]) -> str:
-    bars_html = ""
-    for fn in data["functions"]:
-        color = _bar_color(fn["pct"])
-        bars_html += f"""
-        <div class="bar-row">
-          <div class="bar-head"><span><code>{html.escape(fn['label'])}</code></span><span>{fn['pct']:.1f}%</span></div>
-          <div class="bar-track"><div class="bar-fill" style="width:{fn['pct']:.1f}%;background:{color}"></div></div>
-        </div>"""
+def parse_go(component: str, report_dir: Path) -> dict[str, Any]:
+    cov_text = _read_text(report_dir / "coverage-summary.txt")
+    grem_text = _read_text(report_dir / "gremlins-report.txt")
+    test_text = _read_text(report_dir / "test-results.txt")
 
-    eff_num = float(data["efficacy"].rstrip("%") or 0)
-    donut = _donut_svg(eff_num, data["efficacy"], "EFFICACY")
+    functions: list[dict[str, Any]] = []
+    total_cov = "0.0%"
+    for line in cov_text.splitlines():
+        m_total = re.match(r"^total:\s+\(statements\)\s+([\d.]+%)", line.strip())
+        if m_total:
+            total_cov = m_total.group(1)
+            continue
+        m_fn = re.match(r"^(.+?):(\d+):\s+(\S+)\s+([\d.]+)%", line.strip())
+        if m_fn:
+            short_file = m_fn.group(1).rsplit("/", 1)[-1]
+            functions.append({"label": f"{short_file}:{m_fn.group(3)}", "pct": float(m_fn.group(4))})
 
-    return f"""
-    <section class="section-card">
-      <div class="section-header">
-        <h2 class="section-title"><span class="comp-badge">C-LOG-1</span> ShippingService (Go)</h2>
-        <span class="pill pill-green">Test Efficacy: {html.escape(data['efficacy'])} ({data['lived']} Lived)</span>
-      </div>
-      <div class="two-col">
-        <div class="sub-panel">
-          <h3>Cobertura por Función (Total: {html.escape(data['total_cov'])})</h3>
-          {bars_html}
-        </div>
-        <div class="sub-panel">
-          <h3>Resultados <code>gremlins unleash</code></h3>
-          <div class="donut-wrap">
-            {donut}
-            <ul class="donut-legend">
-              <li><span><i class="dot" style="background:var(--emerald)"></i>Killed</span><strong>{data['killed']}</strong></li>
-              <li><span><i class="dot" style="background:var(--rose)"></i>Lived</span><strong>{data['lived']}</strong></li>
-              <li><span><i class="dot" style="background:var(--amber)"></i>Timed out</span><strong>{data['timed_out']}</strong></li>
-              <li><span><i class="dot" style="background:#94a3b8"></i>Not covered</span><strong>{data['not_covered']}</strong></li>
-            </ul>
-          </div>
-          <p style="font-size:12.5px;color:var(--muted);margin:12px 0 0;">
-            Mutator coverage: <strong>{html.escape(data['mut_cov'])}</strong> · Pruebas PASS: <strong>{data['passed_tests']}</strong> · FAIL: <strong>{data['failed_tests']}</strong>.
-          </p>
-        </div>
-      </div>
-    </section>
-    """
+    def _g_int(pat: str) -> int:
+        m = re.search(pat, grem_text)
+        return int(m.group(1)) if m else 0
+
+    def _g_str(pat: str, default: str = "0.00%") -> str:
+        m = re.search(pat, grem_text)
+        return m.group(1) if m else default
+
+    killed = _g_int(r"Killed:\s*(\d+)")
+    lived = _g_int(r"Lived:\s*(\d+)")
+    not_covered = _g_int(r"Not covered:\s*(\d+)")
+    timed_out = _g_int(r"Timed out:\s*(\d+)")
+    efficacy = _g_str(r"Test efficacy:\s*([\d.]+%)")
+    mut_cov = _g_str(r"Mutator coverage:\s*([\d.]+%)")
+
+    passed_tests = len(re.findall(r"--- PASS:", test_text))
+    failed_tests = len(re.findall(r"--- FAIL:", test_text))
+    no_tests = "Sin pruebas unitarias" in test_text
+    status = "SIN TESTS" if no_tests else ("PASS" if failed_tests == 0 and ("PASS" in test_text or passed_tests > 0) else "FAIL")
+
+    return {
+        "component": component,
+        "stack": "Go",
+        "status": status,
+        "passed": passed_tests,
+        "failed": failed_tests,
+        "coverage": total_cov,
+        "mutation_summary": "Omitida" if "Mutación omitida" in grem_text else f"Efficacy {efficacy} ({killed} Killed, {lived} Lived)",
+        "killed": killed,
+        "lived": lived,
+        "timed_out": timed_out,
+        "not_covered": not_covered,
+        "efficacy": efficacy,
+        "mut_cov": mut_cov,
+        "functions": functions,
+    }
 
 
-def render_recommendation_section(data: dict[str, Any]) -> str:
-    bars_html = ""
-    for mod in data["modules"]:
-        color = _bar_color(mod["pct"])
-        bars_html += f"""
-        <div class="bar-row">
-          <div class="bar-head"><span><code>{html.escape(mod['name'])}</code> ({mod['stmts']} stmts)</span><span>{mod['pct']}%</span></div>
-          <div class="bar-track"><div class="bar-fill" style="width:{mod['pct']}%;background:{color}"></div></div>
-        </div>"""
+def parse_python(component: str, report_dir: Path) -> dict[str, Any]:
+    cov_text = _read_text(report_dir / "pytest-coverage.txt")
+    mut_res_text = _read_text(report_dir / "mutmut-results.txt")
+    mut_run_text = _read_text(report_dir / "mutmut-run.txt")
 
-    donut = _donut_svg(data["killed_pct"], f"{data['killed_pct']:.1f}%", "KILLED", track_color="#fee2e2")
-    tests_rows = "".join(
-        f"<tr><td><code>{html.escape(t['name'])}</code></td><td><span class='pill pill-green'>{html.escape(t['status'])}</span></td></tr>"
-        for t in data["tests"]
+    modules: list[dict[str, Any]] = []
+    total_cov = "0%"
+    total_stmts = 0
+    total_miss = 0
+    for line in cov_text.splitlines():
+        m_tot = re.match(r"^TOTAL\s+(\d+)\s+(\d+)\s+(\d+%)", line.strip())
+        if m_tot:
+            total_stmts, total_miss, total_cov = int(m_tot.group(1)), int(m_tot.group(2)), m_tot.group(3)
+            continue
+        m_mod = re.match(r"^([\w./\\-]+\.py)\s+(\d+)\s+(\d+)\s+(\d+)%", line.strip())
+        if m_mod:
+            modules.append({
+                "name": m_mod.group(1),
+                "stmts": int(m_mod.group(2)),
+                "miss": int(m_mod.group(3)),
+                "pct": int(m_mod.group(4)),
+            })
+
+    m_sum = re.search(r"(\d+)\s+passed", cov_text)
+    passed = int(m_sum.group(1)) if m_sum else 0
+    m_fail = re.search(r"(\d+)\s+failed", cov_text)
+    failed = int(m_fail.group(1)) if m_fail else 0
+    no_tests = "Sin pruebas unitarias" in cov_text
+    status = "SIN TESTS" if no_tests else ("PASS" if failed == 0 and passed > 0 else "FAIL")
+
+    killed = survived = timeout = suspicious = skipped = total_mutants = 0
+    progress_matches = re.findall(
+        r"(\d+)/(\d+)\s+🎉\s*(\d+)\s+⏰\s*(\d+)\s+🤔\s*(\d+)\s+🙁\s*(\d+)\s+🔇\s*(\d+)",
+        mut_run_text,
     )
+    if progress_matches:
+        _, tm, k, to, su, sv, sk = progress_matches[-1]
+        total_mutants, killed, timeout, suspicious, survived, skipped = int(tm), int(k), int(to), int(su), int(sv), int(sk)
+
+    killed_pct = (killed / total_mutants * 100.0) if total_mutants > 0 else 0.0
+    survived_ids = ""
+    for line in mut_res_text.splitlines():
+        if re.match(r"^[\d,\s-]+$", line.strip()) and line.strip():
+            survived_ids = line.strip()
+
+    return {
+        "component": component,
+        "stack": "Python",
+        "status": status,
+        "passed": passed,
+        "failed": failed,
+        "coverage": total_cov,
+        "total_stmts": total_stmts,
+        "total_miss": total_miss,
+        "modules": modules,
+        "killed": killed,
+        "survived": survived,
+        "timeout": timeout,
+        "suspicious": suspicious,
+        "skipped": skipped,
+        "total_mutants": total_mutants,
+        "killed_pct": killed_pct,
+        "survived_ids": survived_ids,
+        "mutation_summary": "Omitida" if "Mutación omitida" in mut_res_text else f"{killed_pct:.2f}% ({killed}/{total_mutants} Killed)",
+    }
+
+
+def parse_node(component: str, report_dir: Path) -> dict[str, Any]:
+    test_text = _read_text(report_dir / "node-test-coverage.txt")
+    stryker_text = _read_text(report_dir / "stryker-report.txt")
+
+    no_tests = "Sin pruebas unitarias" in test_text
+    m_pass = re.search(r"(?:pass|passing)\s+(\d+)", test_text, re.IGNORECASE)
+    passed = int(m_pass.group(1)) if m_pass else 0
+    m_cov = re.search(r"All files\s*\|\s*([\d.]+)", test_text)
+    cov = f"{m_cov.group(1)}%" if m_cov else "N/A"
+    status = "SIN TESTS" if no_tests else ("PASS" if "fail" not in test_text.lower() or passed > 0 else "FAIL")
+
+    no_mut = "Sin configuración de mutación" in stryker_text
+    m_stryker = re.search(r"Mutation score:\s*([\d.]+%)", stryker_text)
+    mut_summary = "Sin Stryker configurado" if no_mut else (m_stryker.group(1) if m_stryker else "Ejecutado")
+
+    return {
+        "component": component,
+        "stack": "Node.js",
+        "status": status,
+        "passed": passed,
+        "failed": 0,
+        "coverage": cov,
+        "mutation_summary": mut_summary,
+        "raw_test": test_text.strip(),
+        "raw_mut": stryker_text.strip(),
+    }
+
+
+def parse_dotnet(component: str, report_dir: Path) -> dict[str, Any]:
+    test_text = _read_text(report_dir / "dotnet-test.txt")
+    stryker_text = _read_text(report_dir / "stryker-report.txt")
+
+    m_pass = re.search(r"Passed!\s*-\s*Failed:\s*(\d+),\s*Passed:\s*(\d+)", test_text)
+    if not m_pass:
+        m_pass = re.search(r"Aprobadas:\s*(\d+)|Passed:\s*(\d+)", test_text)
+    failed = int(m_pass.group(1)) if (m_pass and len(m_pass.groups()) >= 2 and m_pass.group(1)) else 0
+    passed = int(m_pass.group(2)) if (m_pass and len(m_pass.groups()) >= 2 and m_pass.group(2)) else 0
+    status = "PASS" if ("Passed!" in test_text or passed > 0) and failed == 0 else "SIN TESTS"
+
+    no_mut = "Sin configuración de mutación" in stryker_text
+    mut_summary = "Sin Stryker.NET configurado" if no_mut else "Ejecutado"
+
+    return {
+        "component": component,
+        "stack": ".NET",
+        "status": status,
+        "passed": passed,
+        "failed": failed,
+        "coverage": "XPlat Cobertura XML" if status == "PASS" else "N/A",
+        "mutation_summary": mut_summary,
+        "raw_test": test_text.strip(),
+        "raw_mut": stryker_text.strip(),
+    }
+
+
+def parse_auto(component: str, report_dir: Path, stack: str | None = None) -> dict[str, Any]:
+    if stack == "go" or (stack is None and (report_dir / "coverage-summary.txt").exists()):
+        return parse_go(component, report_dir)
+    if stack == "python" or (stack is None and (report_dir / "pytest-coverage.txt").exists()):
+        return parse_python(component, report_dir)
+    if stack == "node" or (stack is None and (report_dir / "node-test-coverage.txt").exists()):
+        return parse_node(component, report_dir)
+    if stack == "dotnet" or (stack is None and (report_dir / "dotnet-test.txt").exists()):
+        return parse_dotnet(component, report_dir)
+    return {
+        "component": component,
+        "stack": stack or "Desconocido",
+        "status": "SIN DATOS",
+        "passed": 0,
+        "failed": 0,
+        "coverage": "N/A",
+        "mutation_summary": "N/A",
+    }
+
+
+def render_component_card(d: dict[str, Any]) -> str:
+    pill_cls = "pill-green" if d["status"] == "PASS" else ("pill-amber" if d["status"] == "SIN TESTS" else "pill-red")
+    stack = d["stack"]
+
+    if stack == "Go":
+        bars = "".join(
+            f'<div class="bar-row"><div class="bar-head"><span><code>{html.escape(fn["label"])}</code></span><span>{fn["pct"]:.1f}%</span></div>'
+            f'<div class="bar-track"><div class="bar-fill" style="width:{fn["pct"]:.1f}%;background:{_bar_color(fn["pct"])}"></div></div></div>'
+            for fn in d.get("functions", [])
+        )
+        eff = float(d["efficacy"].rstrip("%") or 0)
+        donut = _donut_svg(eff, d["efficacy"], "EFFICACY")
+        body = f"""
+        <div class="two-col">
+          <div class="sub-panel"><h3>Cobertura por Función (Total: {html.escape(d['coverage'])})</h3>{bars or '<p>Sin funciones reportadas.</p>'}</div>
+          <div class="sub-panel">
+            <h3>Mutación (<code>gremlins</code>)</h3>
+            <div class="donut-wrap">{donut}
+              <ul class="donut-legend">
+                <li><span><i class="dot" style="background:var(--emerald)"></i>Killed</span><strong>{d['killed']}</strong></li>
+                <li><span><i class="dot" style="background:var(--rose)"></i>Lived</span><strong>{d['lived']}</strong></li>
+                <li><span><i class="dot" style="background:var(--amber)"></i>Timed out</span><strong>{d['timed_out']}</strong></li>
+                <li><span><i class="dot" style="background:#94a3b8"></i>Not covered</span><strong>{d['not_covered']}</strong></li>
+              </ul>
+            </div>
+          </div>
+        </div>"""
+    elif stack == "Python":
+        bars = "".join(
+            f'<div class="bar-row"><div class="bar-head"><span><code>{html.escape(m["name"])}</code> ({m["stmts"]} stmts)</span><span>{m["pct"]}%</span></div>'
+            f'<div class="bar-track"><div class="bar-fill" style="width:{m["pct"]}%;background:{_bar_color(m["pct"])}"></div></div></div>'
+            for m in d.get("modules", [])
+        )
+        donut = _donut_svg(d["killed_pct"], f"{d['killed_pct']:.1f}%", "KILLED", track_color="#fee2e2")
+        body = f"""
+        <div class="two-col">
+          <div class="sub-panel"><h3>Cobertura por Módulo (Total: {html.escape(d['coverage'])})</h3>{bars or '<p>Sin módulos reportados.</p>'}</div>
+          <div class="sub-panel">
+            <h3>Mutación (<code>mutmut</code> · {d['total_mutants']} mutantes)</h3>
+            <div class="donut-wrap">{donut}
+              <ul class="donut-legend">
+                <li><span><i class="dot" style="background:var(--emerald)"></i>Killed</span><strong>{d['killed']} ({d['killed_pct']:.2f}%)</strong></li>
+                <li><span><i class="dot" style="background:var(--rose)"></i>Survived</span><strong>{d['survived']}</strong></li>
+                <li><span><i class="dot" style="background:var(--amber)"></i>Timeout / Skipped</span><strong>{d['timeout'] + d['suspicious'] + d['skipped']}</strong></li>
+              </ul>
+            </div>
+            <p style="font-size:12px;color:var(--muted);margin:10px 0 0;">Sobrevivientes: <code>{html.escape(d['survived_ids'] or 'N/A')}</code></p>
+          </div>
+        </div>"""
+    else:
+        body = f"""
+        <div class="two-col">
+          <div class="sub-panel"><h3>Pruebas y Cobertura</h3><p>Estado: <strong>{html.escape(d['status'])}</strong> · Cobertura: <strong>{html.escape(d['coverage'])}</strong></p></div>
+          <div class="sub-panel"><h3>Mutación</h3><p>{html.escape(d['mutation_summary'])}</p></div>
+        </div>"""
 
     return f"""
     <section class="section-card">
       <div class="section-header">
-        <h2 class="section-title"><span class="comp-badge">C-LOG-2</span> RecommendationService (Python)</h2>
-        <span class="pill pill-blue">{data['passed_count']} Passed · Cobertura Total: {html.escape(data['total_cov'])}</span>
+        <h2 class="section-title"><span class="comp-badge">{html.escape(stack)}</span> {html.escape(d['component'])}</h2>
+        <span class="pill {pill_cls}">{html.escape(d['status'])} · {html.escape(d['mutation_summary'])}</span>
       </div>
-      <div class="two-col">
-        <div class="sub-panel">
-          <h3>Cobertura por Módulo ({data['total_stmts']} stmts, {data['total_miss']} miss)</h3>
-          {bars_html}
-        </div>
-        <div class="sub-panel">
-          <h3>Resultados <code>mutmut</code> ({data['total_mutants']} mutantes)</h3>
-          <div class="donut-wrap">
-            {donut}
-            <ul class="donut-legend">
-              <li><span><i class="dot" style="background:var(--emerald)"></i>Killed</span><strong>{data['killed']} ({data['killed_pct']:.2f}%)</strong></li>
-              <li><span><i class="dot" style="background:var(--rose)"></i>Survived</span><strong>{data['survived']}</strong></li>
-              <li><span><i class="dot" style="background:var(--amber)"></i>Timeout / Suspicious / Skipped</span><strong>{data['timeout'] + data['suspicious'] + data['skipped']}</strong></li>
-            </ul>
-          </div>
-          <p style="font-size:12.5px;color:var(--muted);margin:12px 0 0;">
-            IDs sobrevivientes en <code>recommendation_server.py</code>: <code>{html.escape(data['survived_ids'] or 'N/A')}</code>
-          </p>
-        </div>
-      </div>
-      <table style="margin-top:16px;">
-        <thead><tr><th>Caso de Prueba</th><th>Veredicto</th></tr></thead>
-        <tbody>{tests_rows}</tbody>
-      </table>
-    </section>
-    """
+      {body}
+    </section>"""
 
 
-def wrap_page(title: str, eyebrow: str, heading: str, subtitle: str, meta: list[tuple[str, str]], kpis: str, body: str, hero_class: str = "") -> str:
+def wrap_page(title: str, eyebrow: str, heading: str, subtitle: str, meta: list[tuple[str, str]], kpis: str, body: str) -> str:
     meta_html = "".join(f"<div><span>{html.escape(k)}</span><strong>{html.escape(v)}</strong></div>" for k, v in meta)
     return f"""<!DOCTYPE html>
 <html lang="es">
@@ -387,7 +421,7 @@ def wrap_page(title: str, eyebrow: str, heading: str, subtitle: str, meta: list[
 </head>
 <body>
   <div class="container">
-    <header class="hero {hero_class}">
+    <header class="hero">
       <div class="hero-top">
         <div>
           <span class="eyebrow">{html.escape(eyebrow)}</span>
@@ -403,79 +437,79 @@ def wrap_page(title: str, eyebrow: str, heading: str, subtitle: str, meta: list[
     <footer class="footer">Generado automáticamente por <code>scripts/generate_verification_reports.py</code> en GitHub Actions.</footer>
   </div>
 </body>
-</html>
-"""
+</html>"""
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Genera reportes ejecutivos HTML desde artefactos de CI.")
-    parser.add_argument("--shipping-dir", type=Path, help="Directorio con reportes de shippingservice")
-    parser.add_argument("--recommendation-dir", type=Path, help="Directorio con reportes de recommendationservice")
-    parser.add_argument("--output-dir", type=Path, required=True, help="Directorio destino para los HTML")
+    parser = argparse.ArgumentParser(description="Genera reportes ejecutivos HTML individuales y consolidado.")
+    parser.add_argument("--component", help="Nombre del componente individual")
+    parser.add_argument("--stack", choices=["go", "python", "node", "dotnet"], help="Stack del componente")
+    parser.add_argument("--report-dir", type=Path, help="Directorio de reportes de un componente")
+    parser.add_argument("--reports-root", type=Path, help="Directorio padre con carpetas *-verification-reports")
+    parser.add_argument("--output-dir", type=Path, required=True, help="Directorio de salida")
     args = parser.parse_args()
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     now_str = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
-    ship_data = parse_shipping(args.shipping_dir) if args.shipping_dir else None
-    rec_data = parse_recommendation(args.recommendation_dir) if args.recommendation_dir else None
-
-    if ship_data:
+    if args.component and args.report_dir:
+        d = parse_auto(args.component, args.report_dir, args.stack)
         kpis = f"""
-        <div class="kpi-card"><div class="kpi-label">Pruebas Go</div><div class="kpi-value">{'PASS' if ship_data['overall_pass'] else 'FAIL'}</div><div class="kpi-sub">{ship_data['passed_tests']} subpruebas ejecutadas</div></div>
-        <div class="kpi-card"><div class="kpi-label">Cobertura Paquete</div><div class="kpi-value">{html.escape(ship_data['total_cov'])}</div><div class="kpi-sub"><code>go tool cover -func</code></div></div>
-        <div class="kpi-card"><div class="kpi-label">Test Efficacy</div><div class="kpi-value">{html.escape(ship_data['efficacy'])}</div><div class="kpi-sub">{ship_data['killed']} Killed · {ship_data['lived']} Lived</div></div>
-        <div class="kpi-card"><div class="kpi-label">Mutator Coverage</div><div class="kpi-value">{html.escape(ship_data['mut_cov'])}</div><div class="kpi-sub">{ship_data['not_covered']} Not covered</div></div>
+        <div class="kpi-card"><div class="kpi-label">Estado Pruebas</div><div class="kpi-value">{html.escape(d['status'])}</div><div class="kpi-sub">Pass: {d['passed']} · Fail: {d['failed']}</div></div>
+        <div class="kpi-card"><div class="kpi-label">Cobertura</div><div class="kpi-value">{html.escape(d['coverage'])}</div><div class="kpi-sub">Stack: {html.escape(d['stack'])}</div></div>
+        <div class="kpi-card"><div class="kpi-label">Mutación</div><div class="kpi-value" style="font-size:20px;">{html.escape(d['mutation_summary'])}</div><div class="kpi-sub">Ejecución automática CI</div></div>
         """
-        html_doc = wrap_page(
-            "Informe Ejecutivo — ShippingService (C-LOG-1)",
-            "Componente C-LOG-1 · Capa Lógica (Go)",
-            "Informe Ejecutivo — ShippingService",
-            "Reporte automático de pruebas unitarias, cobertura y mutación con gremlins.",
-            [("Ubicación", "src/shippingservice"), ("Herramienta", "go test + gremlins"), ("Generado", now_str)],
+        doc = wrap_page(
+            f"Informe Ejecutivo — {d['component']}",
+            f"Verificación de Componente · {d['stack']}",
+            f"Informe Ejecutivo — {d['component']}",
+            "Reporte automático de pruebas unitarias, cobertura y mutación.",
+            [("Componente", d["component"]), ("Stack", d["stack"]), ("Generado", now_str)],
             kpis,
-            render_shipping_section(ship_data),
+            render_component_card(d),
         )
-        (args.output_dir / "executive-report.html").write_text(html_doc, encoding="utf-8")
+        (args.output_dir / "executive-report.html").write_text(doc, encoding="utf-8")
+        return
 
-    if rec_data:
-        kpis = f"""
-        <div class="kpi-card"><div class="kpi-label">Pruebas Pytest</div><div class="kpi-value">{rec_data['passed_count']} PASSED</div><div class="kpi-sub">{rec_data['failed_count']} failed</div></div>
-        <div class="kpi-card"><div class="kpi-label">Cobertura Total</div><div class="kpi-value">{html.escape(rec_data['total_cov'])}</div><div class="kpi-sub">{rec_data['total_stmts']} stmts · {rec_data['total_miss']} miss</div></div>
-        <div class="kpi-card"><div class="kpi-label">Mutación (Killed)</div><div class="kpi-value">{rec_data['killed_pct']:.2f}%</div><div class="kpi-sub">{rec_data['killed']} / {rec_data['total_mutants']} mutantes</div></div>
-        <div class="kpi-card"><div class="kpi-label">Sobrevivientes</div><div class="kpi-value">{rec_data['survived']}</div><div class="kpi-sub"><code>mutmut results</code></div></div>
-        """
-        html_doc = wrap_page(
-            "Informe Ejecutivo — RecommendationService (C-LOG-2)",
-            "Componente C-LOG-2 · Capa Lógica (Python)",
-            "Informe Ejecutivo — RecommendationService",
-            "Reporte automático de pruebas unitarias, cobertura con pytest-cov y mutación con mutmut.",
-            [("Ubicación", "src/recommendationservice"), ("Herramienta", "pytest + mutmut"), ("Generado", now_str)],
-            kpis,
-            render_recommendation_section(rec_data),
-            hero_class="indigo",
+    if args.reports_root:
+        components: list[dict[str, Any]] = []
+        for sub in sorted(args.reports_root.iterdir()):
+            if sub.is_dir():
+                comp_name = sub.name.removesuffix("-verification-reports")
+                components.append(parse_auto(comp_name, sub))
+
+        summary_rows = "".join(
+            f"<tr><td><strong>{html.escape(c['component'])}</strong></td><td><code>{html.escape(c['stack'])}</code></td>"
+            f"<td><span class='pill {'pill-green' if c['status']=='PASS' else 'pill-amber'}'>{html.escape(c['status'])}</span></td>"
+            f"<td>{html.escape(c['coverage'])}</td><td>{html.escape(c['mutation_summary'])}</td></tr>"
+            for c in components
         )
-        out_name = "executive-report-recommendation.html" if ship_data else "executive-report.html"
-        (args.output_dir / out_name).write_text(html_doc, encoding="utf-8")
+        summary_table = f"""
+        <section class="section-card">
+          <div class="section-header"><h2 class="section-title">Resumen General de Componentes</h2></div>
+          <table>
+            <thead><tr><th>Componente</th><th>Stack</th><th>Pruebas</th><th>Cobertura</th><th>Mutación</th></tr></thead>
+            <tbody>{summary_rows}</tbody>
+          </table>
+        </section>"""
 
-    if ship_data and rec_data:
+        cards = summary_table + "".join(render_component_card(c) for c in components)
+        pass_cnt = sum(1 for c in components if c["status"] == "PASS")
         kpis = f"""
-        <div class="kpi-card"><div class="kpi-label">ShippingService</div><div class="kpi-value">{'PASS' if ship_data['overall_pass'] else 'FAIL'}</div><div class="kpi-sub">Cobertura {html.escape(ship_data['total_cov'])} · Efficacy {html.escape(ship_data['efficacy'])}</div></div>
-        <div class="kpi-card"><div class="kpi-label">RecommendationService</div><div class="kpi-value">{rec_data['passed_count']} PASSED</div><div class="kpi-sub">Cobertura {html.escape(rec_data['total_cov'])} · Killed {rec_data['killed_pct']:.2f}%</div></div>
-        <div class="kpi-card"><div class="kpi-label">Mutantes Eliminados</div><div class="kpi-value">{ship_data['killed'] + rec_data['killed']}</div><div class="kpi-sub">Shipping ({ship_data['killed']}) + Recommendation ({rec_data['killed']})</div></div>
-        <div class="kpi-card"><div class="kpi-label">Mutantes Sobrevivientes</div><div class="kpi-value">{ship_data['lived'] + rec_data['survived']}</div><div class="kpi-sub">Shipping ({ship_data['lived']}) + Recommendation ({rec_data['survived']})</div></div>
+        <div class="kpi-card"><div class="kpi-label">Componentes Evaluados</div><div class="kpi-value">{len(components)}</div><div class="kpi-sub">Ejecutados en este flujo</div></div>
+        <div class="kpi-card"><div class="kpi-label">Suites en PASS</div><div class="kpi-value">{pass_cnt}</div><div class="kpi-sub">De {len(components)} componentes</div></div>
+        <div class="kpi-card"><div class="kpi-label">Fecha de Corte</div><div class="kpi-value" style="font-size:20px;">{now_str}</div><div class="kpi-sub">GitHub Actions CI</div></div>
         """
-        combined_body = render_shipping_section(ship_data) + render_recommendation_section(rec_data)
-        html_doc = wrap_page(
-            "Reporte Ejecutivo Consolidado — Verificación a Nivel de Componente",
+        doc = wrap_page(
+            "Reporte Ejecutivo Consolidado — Online Boutique",
             "Entregable 1 · Verificación a Nivel de Componente",
-            "Reporte Ejecutivo de Cobertura y Mutación",
-            "Consolidado automático generado desde los resultados de ejecución de CI para ShippingService y RecommendationService.",
-            [("Sistema", "Online Boutique"), ("Componentes", "C-LOG-1, C-LOG-2"), ("Generado", now_str)],
+            "Reporte Ejecutivo Consolidado de Cobertura y Mutación",
+            "Resumen automático de pruebas unitarias, cobertura y mutación para todos los componentes ejecutados.",
+            [("Sistema", "Online Boutique"), ("Componentes", str(len(components))), ("Generado", now_str)],
             kpis,
-            combined_body,
+            cards,
         )
-        (args.output_dir / "executive-verification-report.html").write_text(html_doc, encoding="utf-8")
+        (args.output_dir / "executive-verification-report.html").write_text(doc, encoding="utf-8")
 
 
 if __name__ == "__main__":

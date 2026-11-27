@@ -1,0 +1,76 @@
+name: "Reusable - Python Component Verification"
+
+on:
+  workflow_call:
+    inputs:
+      component_name:
+        required: true
+        type: string
+      working_dir:
+        required: true
+        type: string
+      mutate_target:
+        required: false
+        type: string
+        default: ""
+      run_mutation:
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  verify-python:
+    name: "Python · ${{ inputs.component_name }}"
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install Dependencies
+        working-directory: ${{ inputs.working_dir }}
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install pytest pytest-cov 'mutmut<3'
+
+      - name: Run Unit Tests & Coverage
+        working-directory: ${{ inputs.working_dir }}
+        run: |
+          mkdir -p reports
+          if [ -d tests ] || find . -maxdepth 2 -name 'test_*.py' | grep -q .; then
+            pytest --cov=. --cov-report=term-missing --cov-report=xml:reports/coverage.xml -v | tee reports/pytest-coverage.txt
+          else
+            echo "Sin pruebas unitarias en ${{ inputs.working_dir }}" | tee reports/pytest-coverage.txt
+          fi
+
+      - name: Run Mutation Testing (Mutmut)
+        working-directory: ${{ inputs.working_dir }}
+        run: |
+          if [ "${{ inputs.run_mutation }}" = "true" ] && [ -n "${{ inputs.mutate_target }}" ] && [ -f "${{ inputs.mutate_target }}" ]; then
+            mutmut run --paths-to-mutate="${{ inputs.mutate_target }}" | tee reports/mutmut-run.txt || true
+            mutmut results | tee reports/mutmut-results.txt
+          else
+            echo "Mutación omitida (sin target o deshabilitada)." | tee reports/mutmut-results.txt
+          fi
+
+      - name: Generate Component Executive HTML Report
+        run: |
+          python3 scripts/generate_verification_reports.py \
+            --component "${{ inputs.component_name }}" \
+            --stack python \
+            --report-dir "${{ inputs.working_dir }}/reports" \
+            --output-dir "${{ inputs.working_dir }}/reports"
+
+      - name: Upload Component Reports
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: "${{ inputs.component_name }}-verification-reports"
+          path: "${{ inputs.working_dir }}/reports/"
