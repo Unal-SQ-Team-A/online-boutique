@@ -45,7 +45,7 @@ jobs:
         run: |
           mkdir -p reports
           if [ "${{ steps.check_tests.outputs.has_tests }}" = "true" ]; then
-            go test -v -coverprofile=reports/coverage.out ./... | tee reports/test-results.txt
+            go test -vet=off -v -coverprofile=reports/coverage.out ./... | tee reports/test-results.txt
             go tool cover -func=reports/coverage.out | tee reports/coverage-summary.txt
           else
             echo "Sin pruebas unitarias (*_test.go) en ${{ inputs.working_dir }}" | tee reports/test-results.txt

@@ -30,29 +30,25 @@ jobs:
       frontend: ${{ steps.filter.outputs.frontend }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
 
       - name: Detect modified component paths
         id: filter
-        uses: dorny/paths-filter@v3
-        with:
-          filters: |
-            infra:
-              - '.github/workflows/**'
-              - 'scripts/**'
-            shippingservice:
-              - 'src/shippingservice/**'
-            recommendationservice:
-              - 'src/recommendationservice/**'
-            paymentservice:
-              - 'src/paymentservice/**'
-            currencyservice:
-              - 'src/currencyservice/**'
-            cartservice:
-              - 'src/cartservice/**'
-            checkoutservice:
-              - 'src/checkoutservice/**'
-            frontend:
-              - 'src/frontend/**'
+        run: |
+          CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
+          check_path() {
+            echo "$CHANGED" | grep -qE "^$1/" && echo "true" || echo "false"
+          }
+          INFRA=$(echo "$CHANGED" | grep -qE "^(\.github/workflows|scripts)/" && echo "true" || echo "false")
+          echo "infra=$INFRA" >> "$GITHUB_OUTPUT"
+          echo "shippingservice=$(check_path src/shippingservice)" >> "$GITHUB_OUTPUT"
+          echo "recommendationservice=$(check_path src/recommendationservice)" >> "$GITHUB_OUTPUT"
+          echo "paymentservice=$(check_path src/paymentservice)" >> "$GITHUB_OUTPUT"
+          echo "currencyservice=$(check_path src/currencyservice)" >> "$GITHUB_OUTPUT"
+          echo "cartservice=$(check_path src/cartservice)" >> "$GITHUB_OUTPUT"
+          echo "checkoutservice=$(check_path src/checkoutservice)" >> "$GITHUB_OUTPUT"
+          echo "frontend=$(check_path src/frontend)" >> "$GITHUB_OUTPUT"
 
       - name: Determine full-run mode
         id: mode
