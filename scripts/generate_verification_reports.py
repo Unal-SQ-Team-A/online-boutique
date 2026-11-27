@@ -7,6 +7,7 @@ import argparse
 import datetime as dt
 import html
 import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
@@ -307,6 +308,26 @@ def parse_dotnet(component: str, report_dir: Path) -> dict[str, Any]:
     passed = int(m_pass.group(2)) if (m_pass and len(m_pass.groups()) >= 2 and m_pass.group(2)) else 0
     status = "PASS" if ("Passed!" in test_text or passed > 0) and failed == 0 else "SIN TESTS"
 
+    line_pct = 0.0
+    branch_pct = 0.0
+    classes: list[dict[str, Any]] = []
+    cobertura_files = list(report_dir.rglob("coverage.cobertura.xml"))
+    if cobertura_files:
+        try:
+            root = ET.parse(cobertura_files[0]).getroot()
+            line_pct = float(root.attrib.get("line-rate", 0.0)) * 100.0
+            branch_pct = float(root.attrib.get("branch-rate", 0.0)) * 100.0
+            seen: dict[str, float] = {}
+            for cls in root.findall(".//class"):
+                name = cls.attrib.get("name", "").split(".")[-1]
+                lr = float(cls.attrib.get("line-rate", 0.0)) * 100.0
+                if name and (name not in seen or lr > seen[name]):
+                    seen[name] = lr
+            classes = [{"label": k, "pct": v} for k, v in seen.items()]
+        except ET.ParseError:
+            pass
+
+    cov_str = f"{line_pct:.1f}% líneas ({branch_pct:.1f}% ramas)" if cobertura_files else ("N/A" if status != "PASS" else "Sin XML")
     no_mut = "Sin configuración de mutación" in stryker_text
     mut_summary = "Sin Stryker.NET configurado" if no_mut else "Ejecutado"
 
@@ -316,7 +337,10 @@ def parse_dotnet(component: str, report_dir: Path) -> dict[str, Any]:
         "status": status,
         "passed": passed,
         "failed": failed,
-        "coverage": "XPlat Cobertura XML" if status == "PASS" else "N/A",
+        "coverage": cov_str,
+        "line_pct": line_pct,
+        "branch_pct": branch_pct,
+        "classes": classes,
         "mutation_summary": mut_summary,
         "raw_test": test_text.strip(),
         "raw_mut": stryker_text.strip(),
@@ -391,6 +415,17 @@ def render_component_card(d: dict[str, Any]) -> str:
             </div>
             <p style="font-size:12px;color:var(--muted);margin:10px 0 0;">Sobrevivientes: <code>{html.escape(d['survived_ids'] or 'N/A')}</code></p>
           </div>
+        </div>"""
+    elif stack == ".NET":
+        bars = "".join(
+            f'<div class="bar-row"><div class="bar-head"><span><code>{html.escape(c["label"])}</code></span><span>{c["pct"]:.1f}%</span></div>'
+            f'<div class="bar-track"><div class="bar-fill" style="width:{c["pct"]:.1f}%;background:{_bar_color(c["pct"])}"></div></div></div>'
+            for c in d.get("classes", [])[:12]
+        )
+        body = f"""
+        <div class="two-col">
+          <div class="sub-panel"><h3>Cobertura por Clase (Cobertura XML: {html.escape(d['coverage'])})</h3>{bars or '<p>Sin clases reportadas en Cobertura XML.</p>'}</div>
+          <div class="sub-panel"><h3>Pruebas y Mutación</h3><p>Pruebas: <strong>{d['passed']} Passed</strong> · <strong>{d['failed']} Failed</strong></p><p>Mutación: <strong>{html.escape(d['mutation_summary'])}</strong></p></div>
         </div>"""
     else:
         body = f"""
