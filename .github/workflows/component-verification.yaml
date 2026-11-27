@@ -45,6 +45,12 @@ jobs:
           export PATH="$PATH:$(go env GOPATH)/bin"
           gremlins unleash | tee reports/gremlins-report.txt
 
+      - name: Generate ShippingService Executive HTML Report
+        run: |
+          python3 scripts/generate_verification_reports.py \
+            --shipping-dir src/shippingservice/reports \
+            --output-dir src/shippingservice/reports
+
       - name: Upload ShippingService Reports
         uses: actions/upload-artifact@v7
         if: always()
@@ -85,9 +91,53 @@ jobs:
           mutmut run --paths-to-mutate=recommendation_server.py | tee reports/mutmut-run.txt || true
           mutmut results | tee reports/mutmut-results.txt
 
+      - name: Generate RecommendationService Executive HTML Report
+        run: |
+          python3 scripts/generate_verification_reports.py \
+            --recommendation-dir src/recommendationservice/reports \
+            --output-dir src/recommendationservice/reports
+
       - name: Upload RecommendationService Reports
         uses: actions/upload-artifact@v7
         if: always()
         with:
           name: recommendationservice-verification-reports
           path: src/recommendationservice/reports/
+
+  executive-summary-report:
+    name: "Consolidated Executive HTML Report"
+    runs-on: ubuntu-24.04
+    needs:
+      - shippingservice-verification
+      - recommendationservice-verification
+    if: always()
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Download ShippingService Reports
+        uses: actions/download-artifact@v8
+        with:
+          name: shippingservice-verification-reports
+          path: tmp-reports/shippingservice
+
+      - name: Download RecommendationService Reports
+        uses: actions/download-artifact@v8
+        with:
+          name: recommendationservice-verification-reports
+          path: tmp-reports/recommendationservice
+
+      - name: Generate Consolidated Executive Report
+        run: |
+          python3 scripts/generate_verification_reports.py \
+            --shipping-dir tmp-reports/shippingservice \
+            --recommendation-dir tmp-reports/recommendationservice \
+            --output-dir tmp-reports/executive
+
+      - name: Upload Consolidated Executive Report
+        uses: actions/upload-artifact@v7
+        with:
+          name: executive-verification-report
+          path: tmp-reports/executive/executive-verification-report.html
