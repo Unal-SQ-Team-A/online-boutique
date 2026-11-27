@@ -61,7 +61,7 @@ jobs:
         run: |
           if [ "${{ inputs.run_mutation }}" = "true" ] && [ "${{ steps.check_tests.outputs.has_tests }}" = "true" ]; then
             export PATH="$PATH:$(go env GOPATH)/bin"
-            gremlins unleash --workers=2 --timeout-coefficient=30 | tee reports/gremlins-report.txt
+            GOFLAGS="-vet=off" gremlins unleash --workers=2 --timeout-coefficient=30 | tee reports/gremlins-report.txt
           else
             echo "Mutación omitida (sin configuración o sin tests)." | tee reports/gremlins-report.txt
           fi
