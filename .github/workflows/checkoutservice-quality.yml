@@ -19,7 +19,7 @@ permissions:
   contents: read
 
 jobs:
-  checkoutservice:
+  checkoutservice-tests:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -28,9 +28,6 @@ jobs:
       - name: Run tests and collect coverage
         run: docker compose -f test/compose.yaml run --rm checkoutservice-tests
 
-      - name: Run mutation tests
-        run: docker compose -f test/compose.yaml run --rm checkoutservice-mutation
-
       - name: Upload coverage report
         if: always()
         uses: actions/upload-artifact@v4
@@ -38,3 +35,12 @@ jobs:
           name: checkoutservice-coverage
           path: test/checkoutservice/checkoutservice-coverage.out
           if-no-files-found: warn
+
+  checkoutservice-mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Run mutation tests
+        run: docker compose -f test/compose.yaml run --rm checkoutservice-mutation
