@@ -135,6 +135,8 @@ El UUID es la excepción: `uuid.NewUUID()` no se sustituye y el reloj no se fija
 | --- | --- | --- | --- | --- | --- |
 | CheckoutService (`checkoutService.PlaceOrder`) | Go 1.27.1, `testing`, gRPC y `bufconn`; orquestado con Docker Compose | [`main_test.go`](main_test.go), incorporado al módulo mediante [`overlay.json`](overlay.json) | `docker compose -f test\compose.yaml run --rm checkoutservice-tests` (desde la raíz del repositorio) | Ejecución 2026-11-27: comando finalizó exitosamente; todos los casos y subcasos pasaron. | Salida agregada: `ok .../checkoutservice 0.134s coverage: 32.8% of statements in ./...`; `genproto`: 0.0%; `money`: 2.8%. Se generó [`checkoutservice-coverage.out`](checkoutservice-coverage.out), que mide sentencias, no ramas. No se usa red externa ni base de datos. |
 
+En GitHub Actions, las pruebas y mutation testing están en jobs independientes, sin dependencia entre ellos; Actions puede ejecutarlos en paralelo si hay runners disponibles. El artefacto de cobertura se carga desde el job de pruebas.
+
 ## Adecuación
 
 ### Cobertura reportada y partes sin ejecutar
