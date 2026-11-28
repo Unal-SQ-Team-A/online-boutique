@@ -14,16 +14,25 @@ aparece en el nombre de la prueba Go y se imprime con `go test -v`.
 | CHECKOUT-007 | [payment failure](checkoutservice-test-cases/CHECKOUT-007/test-case.md) |
 | CHECKOUT-008 | [shipment failure](checkoutservice-test-cases/CHECKOUT-008/test-case.md) |
 | CHECKOUT-009 | [cart cleanup and email failures](checkoutservice-test-cases/CHECKOUT-009/test-case.md) |
+| CHECKOUT-010 | [minimum positive quantity](checkoutservice-test-cases/CHECKOUT-010/test-case.md) |
+| CHECKOUT-011 | [zero and negative quantities](checkoutservice-test-cases/CHECKOUT-011/test-case.md) |
 
 The doubles implement the cart, catalog, currency, shipping, payment, and email gRPC
 services over an in-process `bufconn` listener. They replace all external services;
-no network, database, or clock is used. Each test creates a fresh fixture.
+no external network or database is used. The order UUID is generated dynamically
+and checked for valid syntax. Each test creates a fresh fixture.
+
+The checkout rule is that every item quantity must be greater than zero. CHECKOUT-010
+tests the minimum valid quantity 1; CHECKOUT-001 tests the adjacent value 2.
+CHECKOUT-011 tests the invalid boundary values 0 and -1 and expects gRPC
+`InvalidArgument`. No upper quantity limit is specified.
 
 The checkoutservice README only documents dependency restoration. The product
 requirements describe the user journey but not checkout error or pricing rules.
-Therefore, behavior tested here is derived from `main.go` and the protobuf contract;
-those behaviors are code-based assumptions until confirmed by business documentation.
-The generated order UUID is checked for valid syntax rather than an exact value.
+The `quantity > 0` rule was confirmed by the user and is covered by CHECKOUT-010 and
+CHECKOUT-011. Other behavior without an independent requirement is derived from
+`main.go` and the protobuf contract and remains a code-based assumption. The generated
+order UUID is checked for valid syntax rather than an exact value.
 
 Run the suite from Docker Compose with:
 

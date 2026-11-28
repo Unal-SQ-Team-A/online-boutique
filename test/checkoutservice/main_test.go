@@ -56,6 +56,30 @@ func TestPlaceOrder(t *testing.T) {
 		}
 	})
 
+	t.Run("CHECKOUT-010 minimum positive quantity", func(t *testing.T) {
+		service, doubles := newCheckoutTestService(t)
+		doubles.cart.cart.Items[0].Quantity = 1
+
+		response, err := service.PlaceOrder(context.Background(), checkoutRequest())
+		if err != nil {
+			t.Fatalf("PlaceOrder() returned an error: %v", err)
+		}
+
+		order := response.GetOrder()
+		if len(order.GetItems()) != 1 {
+			t.Fatalf("order items = %v, want one item", order.GetItems())
+		}
+		if got := order.GetItems()[0].GetItem().GetQuantity(); got != 1 {
+			t.Errorf("ordered quantity = %d, want 1", got)
+		}
+		if got := order.GetItems()[0].GetCost().GetUnits(); got != 3 {
+			t.Errorf("item cost = %d, want 3 USD", got)
+		}
+		if got := doubles.payment.request.GetAmount().GetUnits(); got != 5 {
+			t.Errorf("charged amount = %d, want 5 USD", got)
+		}
+	})
+
 	t.Run("CHECKOUT-009 cart cleanup and email failures are non-fatal", func(t *testing.T) {
 		service, doubles := newCheckoutTestService(t)
 		doubles.cart.emptyErr = errors.New("cart storage unavailable")
@@ -147,6 +171,37 @@ func TestPlaceOrderDependencyFailures(t *testing.T) {
 			}
 			if response != nil {
 				t.Errorf("PlaceOrder() response = %v, want nil", response)
+			}
+		})
+	}
+}
+
+func TestPlaceOrderRejectsNonPositiveQuantities(t *testing.T) {
+	tests := []struct {
+		name     string
+		quantity int32
+	}{
+		{name: "negative quantity", quantity: -1},
+		{name: "zero quantity", quantity: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run("CHECKOUT-011 "+tt.name, func(t *testing.T) {
+			service, doubles := newCheckoutTestService(t)
+			doubles.cart.cart.Items[0].Quantity = tt.quantity
+
+			response, err := service.PlaceOrder(context.Background(), checkoutRequest())
+			if got := status.Code(err); got != codes.InvalidArgument {
+				t.Fatalf("PlaceOrder() status = %s, want %s", got, codes.InvalidArgument)
+			}
+			if response != nil {
+				t.Errorf("PlaceOrder() response = %v, want nil", response)
+			}
+			if doubles.payment.request != nil {
+				t.Error("PlaceOrder() charged payment for an invalid quantity")
+			}
+			if doubles.shipping.shipRequest != nil {
+				t.Error("PlaceOrder() shipped an order with an invalid quantity")
 			}
 		})
 	}
