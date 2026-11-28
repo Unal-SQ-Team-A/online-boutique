@@ -1,0 +1,82 @@
+name: "Reusable - Go Component Verification"
+
+on:
+  workflow_call:
+    inputs:
+      component_name:
+        required: true
+        type: string
+      working_dir:
+        required: true
+        type: string
+      run_mutation:
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  verify-go:
+    name: "Go · ${{ inputs.component_name }}"
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.27'
+          cache-dependency-path: "${{ inputs.working_dir }}/go.sum"
+
+      - name: Check for Go tests
+        id: check_tests
+        working-directory: ${{ inputs.working_dir }}
+        run: |
+          if find . -maxdepth 3 -name '*_test.go' | grep -q .; then
+            echo "has_tests=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_tests=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run Unit Tests & Coverage
+        working-directory: ${{ inputs.working_dir }}
+        run: |
+          mkdir -p reports
+          if [ "${{ steps.check_tests.outputs.has_tests }}" = "true" ]; then
+            go test -vet=off -v -coverprofile=reports/coverage.out ./... | tee reports/test-results.txt
+            go tool cover -func=reports/coverage.out | tee reports/coverage-summary.txt
+          else
+            echo "Sin pruebas unitarias (*_test.go) en ${{ inputs.working_dir }}" | tee reports/test-results.txt
+            echo "total: (statements) 0.0%" | tee reports/coverage-summary.txt
+          fi
+
+      - name: Install Gremlins
+        if: inputs.run_mutation && steps.check_tests.outputs.has_tests == 'true'
+        run: go install github.com/go-gremlins/gremlins/cmd/gremlins@latest
+
+      - name: Run Mutation Testing (Gremlins)
+        working-directory: ${{ inputs.working_dir }}
+        run: |
+          if [ "${{ inputs.run_mutation }}" = "true" ] && [ "${{ steps.check_tests.outputs.has_tests }}" = "true" ]; then
+            export PATH="$PATH:$(go env GOPATH)/bin"
+            GOFLAGS="-vet=off" gremlins unleash --workers=2 --timeout-coefficient=30 | tee reports/gremlins-report.txt
+          else
+            echo "Mutación omitida (sin configuración o sin tests)." | tee reports/gremlins-report.txt
+          fi
+
+      - name: Generate Component Executive HTML Report
+        run: |
+          python3 scripts/generate_verification_reports.py \
+            --component "${{ inputs.component_name }}" \
+            --stack go \
+            --report-dir "${{ inputs.working_dir }}/reports" \
+            --output-dir "${{ inputs.working_dir }}/reports"
+
+      - name: Upload Component Reports
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: "${{ inputs.component_name }}-verification-reports"
+          path: "${{ inputs.working_dir }}/reports/"

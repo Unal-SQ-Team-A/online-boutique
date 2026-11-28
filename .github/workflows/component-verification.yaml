@@ -1,0 +1,160 @@
+name: "Component-Level Verification (All Components)"
+
+on:
+  push:
+    branches-ignore:
+      - 'gh-pages'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  detect-changes:
+    name: "Detect Changed Components"
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      run_all: ${{ steps.mode.outputs.run_all }}
+      shippingservice: ${{ steps.filter.outputs.shippingservice }}
+      recommendationservice: ${{ steps.filter.outputs.recommendationservice }}
+      paymentservice: ${{ steps.filter.outputs.paymentservice }}
+      currencyservice: ${{ steps.filter.outputs.currencyservice }}
+      cartservice: ${{ steps.filter.outputs.cartservice }}
+      checkoutservice: ${{ steps.filter.outputs.checkoutservice }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+
+      - name: Detect modified component paths
+        id: filter
+        run: |
+          CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
+          check_path() {
+            echo "$CHANGED" | grep -qE "^$1/" && echo "true" || echo "false"
+          }
+          INFRA=$(echo "$CHANGED" | grep -qE "^(\.github/workflows|scripts)/" && echo "true" || echo "false")
+          echo "infra=$INFRA" >> "$GITHUB_OUTPUT"
+          echo "shippingservice=$(check_path src/shippingservice)" >> "$GITHUB_OUTPUT"
+          echo "recommendationservice=$(check_path src/recommendationservice)" >> "$GITHUB_OUTPUT"
+          echo "paymentservice=$(check_path src/paymentservice)" >> "$GITHUB_OUTPUT"
+          echo "currencyservice=$(check_path src/currencyservice)" >> "$GITHUB_OUTPUT"
+          echo "cartservice=$(check_path src/cartservice)" >> "$GITHUB_OUTPUT"
+          echo "checkoutservice=$(check_path src/checkoutservice)" >> "$GITHUB_OUTPUT"
+          echo "frontend=$(check_path src/frontend)" >> "$GITHUB_OUTPUT"
+
+      - name: Determine full-run mode
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "${{ github.ref }}" = "refs/heads/main" ] || [ "${{ steps.filter.outputs.infra }}" = "true" ]; then
+            echo "run_all=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_all=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  shippingservice:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.run_all == 'true' || needs.detect-changes.outputs.shippingservice == 'true'
+    uses: ./.github/workflows/_verify-go.yaml
+    with:
+      component_name: shippingservice
+      working_dir: src/shippingservice
+      run_mutation: true
+
+  recommendationservice:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.run_all == 'true' || needs.detect-changes.outputs.recommendationservice == 'true'
+    uses: ./.github/workflows/_verify-python.yaml
+    with:
+      component_name: recommendationservice
+      working_dir: src/recommendationservice
+      mutate_target: recommendation_server.py
+      run_mutation: true
+
+  paymentservice:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.run_all == 'true' || needs.detect-changes.outputs.paymentservice == 'true'
+    uses: ./.github/workflows/_verify-node.yaml
+    with:
+      component_name: paymentservice
+      working_dir: src/paymentservice
+      run_mutation: true
+
+  currencyservice:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.run_all == 'true' || needs.detect-changes.outputs.currencyservice == 'true'
+    uses: ./.github/workflows/_verify-node.yaml
+    with:
+      component_name: currencyservice
+      working_dir: src/currencyservice
+      run_mutation: true
+
+  cartservice:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.run_all == 'true' || needs.detect-changes.outputs.cartservice == 'true'
+    uses: ./.github/workflows/_verify-dotnet.yaml
+    with:
+      component_name: cartservice
+      working_dir: src/cartservice
+      run_mutation: true
+
+  checkoutservice:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.run_all == 'true' || needs.detect-changes.outputs.checkoutservice == 'true'
+    uses: ./.github/workflows/_verify-go.yaml
+    with:
+      component_name: checkoutservice
+      working_dir: src/checkoutservice
+      run_mutation: true
+
+  frontend:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.run_all == 'true' || needs.detect-changes.outputs.frontend == 'true'
+    uses: ./.github/workflows/_verify-go.yaml
+    with:
+      component_name: frontend
+      working_dir: src/frontend
+      run_mutation: true
+
+  executive-summary-report:
+    name: "Consolidated Executive HTML Report"
+    runs-on: ubuntu-24.04
+    needs:
+      - shippingservice
+      - recommendationservice
+      - paymentservice
+      - currencyservice
+      - cartservice
+      - checkoutservice
+      - frontend
+    if: always()
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Download All Component Reports
+        uses: actions/download-artifact@v8
+        with:
+          pattern: "*-verification-reports"
+          path: tmp-reports
+
+      - name: Generate Consolidated Executive Report
+        run: |
+          python3 scripts/generate_verification_reports.py \
+            --reports-root tmp-reports \
+            --output-dir tmp-reports/executive
+
+      - name: Upload Consolidated Executive Report
+        uses: actions/upload-artifact@v7
+        with:
+          name: executive-verification-report
+          path: tmp-reports/executive/executive-verification-report.html

@@ -1,0 +1,63 @@
+name: "Reusable - .NET Component Verification"
+
+on:
+  workflow_call:
+    inputs:
+      component_name:
+        required: true
+        type: string
+      working_dir:
+        required: true
+        type: string
+      run_mutation:
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  verify-dotnet:
+    name: ".NET · ${{ inputs.component_name }}"
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        env:
+          DOTNET_INSTALL_DIR: "./.dotnet"
+        with:
+          dotnet-version: '10.0'
+
+      - name: Run Unit Tests & Coverage
+        working-directory: ${{ inputs.working_dir }}
+        run: |
+          mkdir -p reports
+          dotnet test --collect:"XPlat Code Coverage" --results-directory reports/coverage-raw --verbosity normal | tee reports/dotnet-test.txt
+
+      - name: Run Mutation Testing (Stryker.NET if configured)
+        working-directory: ${{ inputs.working_dir }}
+        run: |
+          if [ "${{ inputs.run_mutation }}" = "true" ] && [ -f stryker-config.json ]; then
+            dotnet tool restore || dotnet tool install -g dotnet-stryker
+            dotnet stryker | tee reports/stryker-report.txt || true
+          else
+            echo "Sin configuración de mutación (stryker-config.json) en ${{ inputs.working_dir }}." | tee reports/stryker-report.txt
+          fi
+
+      - name: Generate Component Executive HTML Report
+        run: |
+          python3 scripts/generate_verification_reports.py \
+            --component "${{ inputs.component_name }}" \
+            --stack dotnet \
+            --report-dir "${{ inputs.working_dir }}/reports" \
+            --output-dir "${{ inputs.working_dir }}/reports"
+
+      - name: Upload Component Reports
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: "${{ inputs.component_name }}-verification-reports"
+          path: "${{ inputs.working_dir }}/reports/"

@@ -1,0 +1,72 @@
+name: "Reusable - Node.js Component Verification"
+
+on:
+  workflow_call:
+    inputs:
+      component_name:
+        required: true
+        type: string
+      working_dir:
+        required: true
+        type: string
+      run_mutation:
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  verify-node:
+    name: "Node.js · ${{ inputs.component_name }}"
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: "${{ inputs.working_dir }}/package-lock.json"
+
+      - name: Install Dependencies
+        working-directory: ${{ inputs.working_dir }}
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+
+      - name: Run Unit Tests & Coverage
+        working-directory: ${{ inputs.working_dir }}
+        run: |
+          mkdir -p reports
+          HAS_TESTS=$(node -e "const p=require('./package.json'); console.log(p.scripts && p.scripts.test && !p.scripts.test.includes('no test specified') ? 'true' : 'false')")
+          if [ "$HAS_TESTS" = "true" ] || find . -maxdepth 3 \( -name '*.test.js' -o -name '*.spec.js' \) | grep -q .; then
+            npx --yes c8 --reporter=text npm test | tee reports/node-test-coverage.txt || true
+          else
+            echo "Sin pruebas unitarias configuradas en ${{ inputs.working_dir }}" | tee reports/node-test-coverage.txt
+          fi
+
+      - name: Run Mutation Testing (Stryker if configured)
+        working-directory: ${{ inputs.working_dir }}
+        run: |
+          if [ "${{ inputs.run_mutation }}" = "true" ] && { [ -f stryker.conf.json ] || [ -f stryker.config.mjs ] || [ -f stryker.config.json ]; }; then
+            npx --yes stryker run | tee reports/stryker-report.txt || true
+          else
+            echo "Sin configuración de mutación (Stryker) en ${{ inputs.working_dir }}." | tee reports/stryker-report.txt
+          fi
+
+      - name: Generate Component Executive HTML Report
+        run: |
+          python3 scripts/generate_verification_reports.py \
+            --component "${{ inputs.component_name }}" \
+            --stack node \
+            --report-dir "${{ inputs.working_dir }}/reports" \
+            --output-dir "${{ inputs.working_dir }}/reports"
+
+      - name: Upload Component Reports
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: "${{ inputs.component_name }}-verification-reports"
+          path: "${{ inputs.working_dir }}/reports/"
