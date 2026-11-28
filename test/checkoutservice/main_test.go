@@ -15,6 +15,10 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 )
 
+// TestPlaceOrder cubre:
+//   - CHECKOUT-001: orden válida, UUID, envío, cobro, vaciado del carrito y correo.
+//   - CHECKOUT-010: cantidad 1 aceptada con el coste esperado.
+//   - CHECKOUT-009: errores configurados en EmptyCart y Email no invalidan la orden.
 func TestPlaceOrder(t *testing.T) {
 	t.Run("CHECKOUT-001 successful order", func(t *testing.T) {
 		service, doubles := newCheckoutTestService(t)
@@ -98,6 +102,9 @@ func TestPlaceOrder(t *testing.T) {
 	})
 }
 
+// TestPlaceOrderDependencyFailures cubre CHECKOUT-002 a CHECKOUT-008.
+// Los fallos de Cart, Catalog, cotización, conversión y Payment esperan Internal;
+// ShipOrder espera Unavailable. Todos deben devolver una respuesta nula.
 func TestPlaceOrderDependencyFailures(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -176,6 +183,8 @@ func TestPlaceOrderDependencyFailures(t *testing.T) {
 	}
 }
 
+// TestPlaceOrderRejectsNonPositiveQuantities cubre CHECKOUT-011 para cantidades
+// 0 y -1: ambas deben retornar InvalidArgument sin cobrar ni enviar la orden.
 func TestPlaceOrderRejectsNonPositiveQuantities(t *testing.T) {
 	tests := []struct {
 		name     string
