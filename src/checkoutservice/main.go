@@ -237,6 +237,9 @@ func (cs *checkoutService) PlaceOrder(ctx context.Context, req *pb.PlaceOrderReq
 
 	prep, err := cs.prepareOrderItemsAndShippingQuoteFromCart(ctx, req.UserId, req.UserCurrency, req.Address)
 	if err != nil {
+		if status.Code(err) == codes.InvalidArgument {
+			return nil, err
+		}
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 
@@ -290,6 +293,12 @@ func (cs *checkoutService) prepareOrderItemsAndShippingQuoteFromCart(ctx context
 	cartItems, err := cs.getUserCart(ctx, userID)
 	if err != nil {
 		return out, fmt.Errorf("cart failure: %+v", err)
+	}
+	for _, item := range cartItems {
+		if item.GetQuantity() <= 0 {
+			return out, status.Errorf(codes.InvalidArgument,
+				"cart item %q quantity must be greater than zero", item.GetProductId())
+		}
 	}
 	orderItems, err := cs.prepOrderItems(ctx, cartItems, userCurrency)
 	if err != nil {

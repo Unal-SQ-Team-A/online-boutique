@@ -1,0 +1,5 @@
+cartservice/bin/
+cartservice/obj/
+cartservice/TestResults/
+cartservice/StrykerOutput/
+checkoutservice/checkoutservice-coverage.out
