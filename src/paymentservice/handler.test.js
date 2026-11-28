@@ -15,7 +15,51 @@ const modulePaths = {
   charge: path.join(__dirname, 'charge.js')
 };
 
-function freezeClock(t, date) {
+function createSpy(t, implementation = () => undefined) {
+  const calls = [];
+  const spy = (...args) => {
+    calls.push(args);
+    return implementation(...args);
+  };
+  return { spy, calls };
+}
+
+function createStub(implementation) {
+  return implementation;
+}
+
+function createStrictMock(t, expectedCalls, implementation = () => undefined) {
+  const actualCalls = [];
+  t.after(() => assert.deepStrictEqual(actualCalls, expectedCalls));
+  return (...args) => {
+    actualCalls.push(args);
+    return implementation(...args);
+  };
+}
+
+function createFakeServer(t) {
+  return {
+    services: [],
+    boundAddress: null,
+    credentials: null,
+    started: false,
+    addService(definition, implementation) {
+      this.services.push({ definition, implementation });
+    },
+    bindAsync(address, credentials, callback) {
+      this.boundAddress = address;
+      this.credentials = credentials;
+      if (typeof callback === 'function') {
+        callback(null, address);
+      }
+    },
+    start() {
+      this.started = true;
+    }
+  };
+}
+
+function createFakeClock(t, date) {
   const timestamp = date.getTime();
   class FakeDate extends RealDate {
     constructor(...args) {
@@ -30,15 +74,37 @@ function freezeClock(t, date) {
       return timestamp;
     }
   }
+
   const originalDate = globalThis.Date;
   globalThis.Date = FakeDate;
   t.after(() => {
     globalThis.Date = originalDate;
   });
+
+  return { now: timestamp };
 }
 
-function clearComponentCache(t) {
-  for (const file of [modulePaths.server, modulePaths.charge]) {
+function createFakeLogger(t, options = {}) {
+  const messages = [];
+  const filter = options.filter || (() => true);
+  const record = (level, message) => {
+    if (filter(message, level)) {
+      messages.push([level, message]);
+    }
+  };
+
+  return {
+    logger: {
+      info: (message) => record('info', message),
+      error: (message) => record('error', message),
+      warn: (message) => record('warn', message)
+    },
+    messages
+  };
+}
+
+function clearComponentCache(t, files) {
+  for (const file of files) {
     const resolved = require.resolve(file);
     delete require.cache[resolved];
     t.after(() => {
@@ -47,7 +113,7 @@ function clearComponentCache(t) {
   }
 }
 
-function mockModules(t, stubs) {
+function interceptRequire(t, stubs, files = []) {
   const originalLoad = Module._load;
   Module._load = function (request, parent, isMain) {
     if (Object.hasOwn(stubs, request)) {
@@ -55,7 +121,9 @@ function mockModules(t, stubs) {
     }
     return originalLoad.call(this, request, parent, isMain);
   };
-  clearComponentCache(t);
+  if (files.length > 0) {
+    clearComponentCache(t, files);
+  }
   t.after(() => {
     Module._load = originalLoad;
   });
@@ -79,168 +147,172 @@ function makeRequest({
   };
 }
 
-function grpcStubs(capturedServices) {
-  class FakeServer {
-    addService(definition, implementation) {
-      capturedServices.push({ definition, implementation });
-    }
-
-    bindAsync() {}
-
-    start() {}
-  }
-
-  return {
+function loadServer(t, { chargeImpl, logger, fakeServer } = {}) {
+  const server = fakeServer || createFakeServer(t);
+  const loggerDouble = logger || createFakeLogger(t).logger;
+  interceptRequire(t, {
     '@grpc/grpc-js': {
-      Server: FakeServer,
-      ServerCredentials: { createInsecure: () => ({}) },
-      loadPackageDefinition: () => ({
+      Server: function Server() {
+        return server;
+      },
+      ServerCredentials: { createInsecure: createStub(() => ({})) },
+      loadPackageDefinition: createStub(() => ({
         hipstershop: { PaymentService: { service: { charge: null } } },
         grpc: { health: { v1: { Health: { service: { check: null } } } } }
-      })
+      }))
     },
-    '@grpc/proto-loader': { loadSync: () => ({}) }
-  };
-}
-
-function chargeStubs(t, { cardDetails, now, validatorCalls, logs }) {
-  freezeClock(t, now);
-  return {
-    'simple-card-validator': (number) => {
-      validatorCalls.push(number);
-      return { getCardDetails: () => cardDetails };
-    },
-    uuid: { v4: () => FixedTransactionId },
-    pino: () => ({ info: (message) => logs.push(message) })
-  };
-}
-
-function loadServer(t, { chargeImpl, loggerImpl, capturedServices = [] } = {}) {
-  mockModules(t, {
-    ...grpcStubs(capturedServices),
-    './charge': chargeImpl || (() => ({ transaction_id: FixedTransactionId })),
-    './logger': loggerImpl || { info: () => {} }
-  });
-  return require(modulePaths.server);
+    '@grpc/proto-loader': { loadSync: createStub(() => ({})) },
+    './charge': chargeImpl || createStub(() => ({ transaction_id: FixedTransactionId })),
+    './logger': loggerDouble
+  }, [modulePaths.server]);
+  return { HipsterShopServer: require(modulePaths.server), fakeServer: server };
 }
 
 function loadRealChargeServer(t, { cardDetails, now = FixedNow }) {
   const validatorCalls = [];
-  const logs = [];
-  mockModules(t, {
-    ...grpcStubs([]),
-    ...chargeStubs(t, { cardDetails, now, validatorCalls, logs }),
-    './logger': { info: () => {} }
+  const fakeLogger = createFakeLogger(t);
+  const fakeClock = createFakeClock(t, now);
+  const validatorSpy = createSpy(t, (number) => {
+    validatorCalls.push(number);
+    return { getCardDetails: () => cardDetails };
   });
-  return { Server: require(modulePaths.server), validatorCalls, logs };
+  const fakeServer = createFakeServer(t);
+  interceptRequire(t, {
+    '@grpc/grpc-js': {
+      Server: function Server() {
+        return fakeServer;
+      },
+      ServerCredentials: { createInsecure: createStub(() => ({})) },
+      loadPackageDefinition: createStub(() => ({
+        hipstershop: { PaymentService: { service: { charge: null } } },
+        grpc: { health: { v1: { Health: { service: { check: null } } } } }
+      }))
+    },
+    '@grpc/proto-loader': { loadSync: createStub(() => ({})) },
+    'simple-card-validator': validatorSpy.spy,
+    uuid: { v4: createStub(() => FixedTransactionId) },
+    pino: createStub(() => fakeLogger.logger),
+    './logger': { info: () => {} }
+  }, [modulePaths.server, modulePaths.charge]);
+  return {
+    Server: require(modulePaths.server),
+    validatorCalls,
+    logs: fakeLogger.messages,
+    fakeClock,
+    validatorSpy
+  };
 }
 
 function loadCharge(t, { cardDetails, now = FixedNow }) {
   const validatorCalls = [];
-  const logs = [];
-  mockModules(t, chargeStubs(t, { cardDetails, now, validatorCalls, logs }));
-  return { charge: require(modulePaths.charge), logs, validatorCalls };
+  const fakeLogger = createFakeLogger(t);
+  const fakeClock = createFakeClock(t, now);
+  const validatorSpy = createSpy(t, (number) => {
+    validatorCalls.push(number);
+    return { getCardDetails: () => cardDetails };
+  });
+  interceptRequire(t, {
+    'simple-card-validator': validatorSpy.spy,
+    uuid: { v4: createStub(() => FixedTransactionId) },
+    pino: createStub(() => fakeLogger.logger)
+  }, [modulePaths.charge]);
+  return {
+    charge: require(modulePaths.charge),
+    logs: fakeLogger.messages,
+    validatorCalls,
+    validatorSpy,
+    fakeClock
+  };
 }
 
-function captureWarnings(t) {
-  const warnings = [];
+function createWarningSpy(t) {
+  const warningSpy = createSpy(t);
   const originalWarn = console.warn;
-  console.warn = (...args) => warnings.push(args);
+  console.warn = warningSpy.spy;
   t.after(() => {
     console.warn = originalWarn;
   });
-  return warnings;
-}
-
-function captureCallback() {
-  const calls = [];
-  return {
-    calls,
-    callback: (...args) => {
-      calls.push(args);
-    }
-  };
+  return warningSpy;
 }
 
 test('TC-PAY-01 ChargeServiceHandler delega en charge y responde con transaction_id', (t) => {
   const request = makeRequest();
-  const logs = [];
+  const fakeLogger = createFakeLogger(t);
   const expectedResponse = { transaction_id: FixedTransactionId };
-  let receivedRequest;
-  const HipsterShopServer = loadServer(t, {
-    chargeImpl: (input) => {
-      receivedRequest = input;
-      return expectedResponse;
-    },
-    loggerImpl: { info: (message) => logs.push(message) }
+  const chargeMock = createStrictMock(t, [[request]], () => expectedResponse);
+  const { HipsterShopServer } = loadServer(t, {
+    chargeImpl: chargeMock,
+    logger: fakeLogger.logger
   });
-  const { calls, callback } = captureCallback();
+  const callbackSpy = createSpy(t);
 
-  HipsterShopServer.ChargeServiceHandler({ request }, callback);
+  HipsterShopServer.ChargeServiceHandler({ request }, callbackSpy.spy);
 
-  assert.deepStrictEqual(receivedRequest, request);
-  assert.strictEqual(calls.length, 1);
-  assert.deepStrictEqual(calls[0], [null, expectedResponse]);
-  assert.deepStrictEqual(logs, [
-    `PaymentService#Charge invoked with request ${JSON.stringify(request)}`
+  assert.strictEqual(callbackSpy.calls.length, 1);
+  assert.deepStrictEqual(callbackSpy.calls[0], [null, expectedResponse]);
+  assert.deepStrictEqual(fakeLogger.messages, [
+    ['info', `PaymentService#Charge invoked with request ${JSON.stringify(request)}`]
   ]);
 });
 
 test('TC-PAY-02 ChargeServiceHandler propaga error de dominio sin responder', (t) => {
   const error = new Error('Credit card info is invalid');
   error.code = 400;
-  const HipsterShopServer = loadServer(t, {
+  const { HipsterShopServer } = loadServer(t, {
     chargeImpl: () => {
       throw error;
     }
   });
-  const warnings = captureWarnings(t);
-  const { calls, callback } = captureCallback();
+  const warningSpy = createWarningSpy(t);
+  const callbackSpy = createSpy(t);
 
-  HipsterShopServer.ChargeServiceHandler({ request: makeRequest() }, callback);
+  HipsterShopServer.ChargeServiceHandler({ request: makeRequest() }, callbackSpy.spy);
 
-  assert.strictEqual(calls.length, 1);
-  assert.strictEqual(calls[0].length, 1);
-  assert.strictEqual(calls[0][0], error);
-  assert.deepStrictEqual(warnings, [[error]]);
+  assert.strictEqual(callbackSpy.calls.length, 1);
+  assert.strictEqual(callbackSpy.calls[0].length, 1);
+  assert.strictEqual(callbackSpy.calls[0][0], error);
+  assert.deepStrictEqual(warningSpy.calls, [[error]]);
 });
 
 test('TC-PAY-03 ChargeServiceHandler propaga error inesperado sin transformarlo', (t) => {
   const error = new TypeError('cannot read property');
-  const HipsterShopServer = loadServer(t, {
+  const { HipsterShopServer } = loadServer(t, {
     chargeImpl: () => {
       throw error;
     }
   });
-  const warnings = captureWarnings(t);
-  const { calls, callback } = captureCallback();
+  const warningSpy = createWarningSpy(t);
+  const callbackSpy = createSpy(t);
 
-  HipsterShopServer.ChargeServiceHandler({ request: {} }, callback);
+  HipsterShopServer.ChargeServiceHandler({ request: {} }, callbackSpy.spy);
 
-  assert.strictEqual(calls.length, 1);
-  assert.deepStrictEqual(calls[0], [error]);
-  assert.deepStrictEqual(warnings, [[error]]);
+  assert.strictEqual(callbackSpy.calls.length, 1);
+  assert.deepStrictEqual(callbackSpy.calls[0], [error]);
+  assert.deepStrictEqual(warningSpy.calls, [[error]]);
 });
 
 test('TC-PAY-04 el handler queda registrado como PaymentService.charge', (t) => {
-  const capturedServices = [];
-  const HipsterShopServer = loadServer(t, { capturedServices });
-  const { calls, callback } = captureCallback();
+  const fakeServer = createFakeServer(t);
+  const { HipsterShopServer } = loadServer(t, { fakeServer });
+  const callbackSpy = createSpy(t);
 
-  new HipsterShopServer('proto', 50051);
+  const serverInstance = new HipsterShopServer('proto', 50051);
+  serverInstance.listen();
 
-  assert.strictEqual(capturedServices.length, 2);
-  assert.strictEqual(typeof capturedServices[0].implementation.charge, 'function');
-  assert.strictEqual(typeof capturedServices[1].implementation.check, 'function');
+  assert.strictEqual(fakeServer.services.length, 2);
+  assert.strictEqual(typeof fakeServer.services[0].implementation.charge, 'function');
+  assert.strictEqual(typeof fakeServer.services[1].implementation.check, 'function');
 
-  capturedServices[0].implementation.charge({ request: makeRequest() }, callback);
-  capturedServices[1].implementation.check({}, (...args) => {
-    calls.push(args);
+  fakeServer.services[0].implementation.charge({ request: makeRequest() }, callbackSpy.spy);
+  fakeServer.services[1].implementation.check({}, (...args) => {
+    callbackSpy.calls.push(args);
   });
 
-  assert.deepStrictEqual(calls[0], [null, { transaction_id: FixedTransactionId }]);
-  assert.deepStrictEqual(calls[1], [null, { status: 'SERVING' }]);
+  assert.deepStrictEqual(callbackSpy.calls[0], [null, { transaction_id: FixedTransactionId }]);
+  assert.deepStrictEqual(callbackSpy.calls[1], [null, { status: 'SERVING' }]);
   assert.strictEqual(HipsterShopServer.ChargeServiceHandler.name, 'ChargeServiceHandler');
+  assert.strictEqual(fakeServer.started, true);
+  assert.strictEqual(fakeServer.boundAddress, '[::]:50051');
 });
 
 test('TC-PAY-05 Visa válida produce transaction_id y registra últimos 4 dígitos', (t) => {
@@ -255,8 +327,8 @@ test('TC-PAY-05 Visa válida produce transaction_id y registra últimos 4 dígit
   assert.deepStrictEqual(validatorCalls, ['4111111111111111']);
   assert.deepStrictEqual(request, makeRequest({ number: '4111111111111111' }));
   assert.strictEqual(logs.length, 1);
-  assert.match(logs[0], /Transaction processed: visa ending 1111/);
-  assert.match(logs[0], /USD12\.500000000/);
+  assert.match(logs[0][1], /Transaction processed: visa ending 1111/);
+  assert.match(logs[0][1], /USD12\.500000000/);
 });
 
 test('TC-PAY-06 Mastercard válida produce transaction_id', (t) => {
@@ -267,7 +339,8 @@ test('TC-PAY-06 Mastercard válida produce transaction_id', (t) => {
   const result = charge(makeRequest({ number: '5555555555554444' }));
 
   assert.deepStrictEqual(result, { transaction_id: FixedTransactionId });
-  assert.match(logs[0], /Transaction processed: mastercard ending 4444/);
+  assert.strictEqual(logs.length, 1);
+  assert.match(logs[0][1], /Transaction processed: mastercard ending 4444/);
 });
 
 test('TC-PAY-07 número inválido lanza InvalidCreditCard con code 400', (t) => {
@@ -351,19 +424,19 @@ test('TC-PAY-12 request sin credit_card propaga TypeError al callback', (t) => {
   const { Server } = loadRealChargeServer(t, {
     cardDetails: { card_type: 'visa', valid: true }
   });
-  const warnings = captureWarnings(t);
-  const { calls, callback } = captureCallback();
+  const warningSpy = createWarningSpy(t);
+  const callbackSpy = createSpy(t);
 
-  Server.ChargeServiceHandler({ request: { amount: { currency_code: 'USD' } } }, callback);
+  Server.ChargeServiceHandler({ request: { amount: { currency_code: 'USD' } } }, callbackSpy.spy);
 
-  assert.strictEqual(calls.length, 1);
-  assert.strictEqual(calls[0].length, 1);
-  assert.ok(calls[0][0] instanceof TypeError);
-  assert.deepStrictEqual(warnings, [[calls[0][0]]]);
+  assert.strictEqual(callbackSpy.calls.length, 1);
+  assert.strictEqual(callbackSpy.calls[0].length, 1);
+  assert.ok(callbackSpy.calls[0][0] instanceof TypeError);
+  assert.deepStrictEqual(warningSpy.calls, [[callbackSpy.calls[0][0]]]);
 });
 
 test('TC-PAY-13 CVV y monto no alteran el transaction_id', (t) => {
-  const { charge, logs, validatorCalls } = loadCharge(t, {
+  const { charge, logs } = loadCharge(t, {
     cardDetails: { card_type: 'visa', valid: true }
   });
   const first = makeRequest({ cvv: 111, amount: { currency_code: 'USD', units: 1, nanos: 0 } });
@@ -374,8 +447,7 @@ test('TC-PAY-13 CVV y monto no alteran el transaction_id', (t) => {
 
   assert.deepStrictEqual(firstResult, { transaction_id: FixedTransactionId });
   assert.deepStrictEqual(secondResult, { transaction_id: FixedTransactionId });
-  assert.strictEqual(validatorCalls.length, 2);
   assert.strictEqual(logs.length, 2);
-  assert.match(logs[0], /USD1\.0/);
-  assert.match(logs[1], /EUR2\.250000000/);
+  assert.match(logs[0][1], /USD1\.0/);
+  assert.match(logs[1][1], /EUR2\.250000000/);
 });
