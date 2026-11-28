@@ -1,0 +1,46 @@
+services:
+  cartservice-tests:
+    image: mcr.microsoft.com/dotnet/sdk:10.0
+    working_dir: /workspace
+    volumes:
+      - ..:/workspace
+    command:
+      - dotnet
+      - test
+      - test/cartservice/cartservice.tests.csproj
+      - --collect:XPlat Code Coverage
+      - --results-directory
+      - test/cartservice/TestResults
+      - --logger
+      - console;verbosity=normal
+  cartservice-mutation:
+    image: mcr.microsoft.com/dotnet/sdk:10.0
+    working_dir: /workspace/test/cartservice
+    volumes:
+      - ..:/workspace
+    command:
+      - sh
+      - -c
+      - dotnet tool restore && dotnet stryker --config-file stryker-config.json
+  checkoutservice-tests:
+    image: golang:1.27.1-alpine
+    working_dir: /workspace/src/checkoutservice
+    volumes:
+      - ..:/workspace
+    command:
+      - go
+      - test
+      - -overlay=/workspace/test/checkoutservice/overlay.json
+      - ./...
+      - -coverpkg=./...
+      - -coverprofile=/workspace/test/checkoutservice/checkoutservice-coverage.out
+      - -covermode=atomic
+  checkoutservice-mutation:
+    image: golang:1.27.1-alpine
+    working_dir: /workspace/src/checkoutservice
+    volumes:
+      - ..:/workspace
+    command:
+      - sh
+      - -c
+      - go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0 && gremlins unleash
