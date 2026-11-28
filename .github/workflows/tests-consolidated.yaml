@@ -1,0 +1,97 @@
+name: "Consolidated Tests (by type)"
+
+# Runs every test suite in the repo through scripts/run-tests.sh, one job per type.
+# Mutation testing is already covered by component-verification.yaml.
+
+on:
+  push:
+    branches:
+      - main
+      - 'test/**'
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'kustomize/**'
+      - 'helm-chart/**'
+      - 'terraform/**'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  dotnet:
+    name: "dotnet · cartservice"
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        env:
+          DOTNET_INSTALL_DIR: "./.dotnet"
+        with:
+          dotnet-version: '10.0'
+      - run: scripts/run-tests.sh dotnet
+
+  defects:
+    name: "defects · cartservice (non-gating)"
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        env:
+          DOTNET_INSTALL_DIR: "./.dotnet"
+        with:
+          dotnet-version: '10.0'
+      # Reproducing the suspected defects is a finding, not a failure: the script exits 0 for it.
+      - run: scripts/run-tests.sh defects
+
+  go:
+    name: "go · frontend, shipping, productcatalog, checkout"
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27'
+      # checkoutservice runs in a container (docker is preinstalled on the runner)
+      - run: scripts/run-tests.sh go
+
+  node:
+    name: "node · payment, currency"
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - run: scripts/run-tests.sh node
+
+  python:
+    name: "python · recommendationservice"
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: scripts/run-tests.sh python
+
+  summary:
+    name: "All tests"
+    if: always()
+    needs: [dotnet, defects, go, node, python]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Gate on required test types
+        run: |
+          echo '${{ toJSON(needs) }}'
+          if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = "true" ]; then
+            echo "One or more test types failed"; exit 1
+          fi
