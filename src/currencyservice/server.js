@@ -14,83 +14,24 @@
  * limitations under the License.
  */
 
-const pino = require('pino');
-const logger = pino({
-  name: 'currencyservice-server',
-  messageKey: 'message',
-  formatters: {
-    level (logLevelString, logLevelNum) {
-      return { severity: logLevelString }
-    }
-  }
-});
-
-if(process.env.DISABLE_PROFILER) {
-  logger.info("Profiler disabled.")
-}
-else {
-  logger.info("Profiler enabled.")
-  require('@google-cloud/profiler').start({
-    serviceContext: {
-      service: 'currencyservice',
-      version: '1.0.0'
-    }
-  });
-}
-
-// Register GRPC OTel Instrumentation for trace propagation
-// regardless of whether tracing is emitted.
-const { GrpcInstrumentation } = require('@opentelemetry/instrumentation-grpc');
-const { registerInstrumentations } = require('@opentelemetry/instrumentation');
-
-registerInstrumentations({
-  instrumentations: [new GrpcInstrumentation()]
-});
-
-if(process.env.ENABLE_TRACING == "1") {
-  logger.info("Tracing enabled.")
-
-  const { resourceFromAttributes } = require('@opentelemetry/resources');
-
-  const { ATTR_SERVICE_NAME } = require('@opentelemetry/semantic-conventions');
-
-  const opentelemetry = require('@opentelemetry/sdk-node');
-
-  const { OTLPTraceExporter } = require('@opentelemetry/exporter-otlp-grpc');
-
-  const collectorUrl = process.env.COLLECTOR_SERVICE_ADDR;
-  const traceExporter = new OTLPTraceExporter({url: collectorUrl});
-  const sdk = new opentelemetry.NodeSDK({
-    resource: resourceFromAttributes({
-      [ ATTR_SERVICE_NAME ]: process.env.OTEL_SERVICE_NAME || 'currencyservice',
-    }),
-    traceExporter: traceExporter,
-  });
-
-  sdk.start()
-}
-else {
-  logger.info("Tracing disabled.")
-}
-
 const path = require('path');
-const grpc = require('@grpc/grpc-js');
-const protoLoader = require('@grpc/proto-loader');
 
 const MAIN_PROTO_PATH = path.join(__dirname, './proto/demo.proto');
 const HEALTH_PROTO_PATH = path.join(__dirname, './proto/grpc/health/v1/health.proto');
-
 const PORT = process.env.PORT;
 
-const shopProto = _loadProto(MAIN_PROTO_PATH).hipstershop;
-const healthProto = _loadProto(HEALTH_PROTO_PATH).grpc.health.v1;
+let logger;
+let grpc;
+let protoLoader;
+let shopProto;
+let healthProto;
 
 /**
  * Helper function that loads a protobuf file.
  */
-function _loadProto (path) {
-  const packageDefinition = protoLoader.loadSync(
-    path,
+function _loadProto(filePath, grpcModule, protoLoaderModule) {
+  const packageDefinition = protoLoaderModule.loadSync(
+    filePath,
     {
       keepCase: true,
       longs: String,
@@ -99,14 +40,14 @@ function _loadProto (path) {
       oneofs: true
     }
   );
-  return grpc.loadPackageDefinition(packageDefinition);
+  return grpcModule.loadPackageDefinition(packageDefinition);
 }
 
 /**
  * Helper function that gets currency data from a stored JSON file
  * Uses public data from European Central Bank
  */
-function _getCurrencyData (callback) {
+function _getCurrencyData(callback) {
   const data = require('./data/currency_conversion.json');
   callback(data);
 }
@@ -125,17 +66,17 @@ function _carry (amount) {
 /**
  * Lists the supported currencies
  */
-function getSupportedCurrencies (call, callback) {
+function getSupportedCurrencies(call, callback) {
   logger.info('Getting supported currencies...');
   _getCurrencyData((data) => {
-    callback(null, {currency_codes: Object.keys(data)});
+    callback(null, { currency_codes: Object.keys(data) });
   });
 }
 
 /**
  * Converts between currencies
  */
-function convert (call, callback) {
+function convert(call, callback) {
   try {
     _getCurrencyData((data) => {
       const request = call.request;
@@ -159,7 +100,7 @@ function convert (call, callback) {
       result.nanos = Math.floor(result.nanos);
       result.currency_code = request.to_code;
 
-      logger.info(`conversion request successful`);
+      logger.info('conversion request successful');
       callback(null, result);
     });
   } catch (err) {
@@ -171,28 +112,128 @@ function convert (call, callback) {
 /**
  * Endpoint for health checks
  */
-function check (call, callback) {
+function check(call, callback) {
   callback(null, { status: 'SERVING' });
+}
+
+function createCurrencyClient({ client, logger: clientLogger, formatter } = {}) {
+  const log = clientLogger || { info() {}, error() {} };
+  const format = typeof formatter === 'function' ? formatter : (money) => money;
+
+  return {
+    getSupportedCurrencies(callback) {
+      client.getSupportedCurrencies({}, (err, response) => {
+        if (err) {
+          log.error(`Error in getSupportedCurrencies: ${err}`);
+          callback(err);
+          return;
+        }
+        log.info(`Currency codes: ${response.currency_codes}`);
+        callback(null, response);
+      });
+    },
+    convert(request, callback) {
+      client.convert(request, (err, response) => {
+        if (err) {
+          log.error(`Error in convert: ${err}`);
+          callback(err);
+          return;
+        }
+        log.info(`Convert: ${format(request.from)} to ${format(response)}`);
+        callback(null, response);
+      });
+    }
+  };
 }
 
 /**
  * Starts an RPC server that receives requests for the
  * CurrencyConverter service at the sample server port
  */
-function main () {
+function main() {
+  logger = require('pino')({
+    name: 'currencyservice-server',
+    messageKey: 'message',
+    formatters: {
+      level(logLevelString, logLevelNum) {
+        return { severity: logLevelString };
+      }
+    }
+  });
+
+  if (process.env.DISABLE_PROFILER) {
+    logger.info('Profiler disabled.');
+  } else {
+    logger.info('Profiler enabled.');
+    require('@google-cloud/profiler').start({
+      serviceContext: {
+        service: 'currencyservice',
+        version: '1.0.0'
+      }
+    });
+  }
+
+  // Register GRPC OTel Instrumentation for trace propagation
+  // regardless of whether tracing is emitted.
+  const { GrpcInstrumentation } = require('@opentelemetry/instrumentation-grpc');
+  const { registerInstrumentations } = require('@opentelemetry/instrumentation');
+
+  registerInstrumentations({
+    instrumentations: [new GrpcInstrumentation()]
+  });
+
+  if (process.env.ENABLE_TRACING == '1') {
+    logger.info('Tracing enabled.');
+
+    const { resourceFromAttributes } = require('@opentelemetry/resources');
+    const { ATTR_SERVICE_NAME } = require('@opentelemetry/semantic-conventions');
+    const opentelemetry = require('@opentelemetry/sdk-node');
+    const { OTLPTraceExporter } = require('@opentelemetry/exporter-otlp-grpc');
+
+    const collectorUrl = process.env.COLLECTOR_SERVICE_ADDR;
+    const traceExporter = new OTLPTraceExporter({ url: collectorUrl });
+
+    const sdk = new opentelemetry.NodeSDK({
+      resource: resourceFromAttributes({
+        [ATTR_SERVICE_NAME]: process.env.OTEL_SERVICE_NAME || 'currencyservice'
+      }),
+      traceExporter: traceExporter
+    });
+
+    sdk.start();
+  } else {
+    logger.info('Tracing disabled.');
+  }
+
+  grpc = require('@grpc/grpc-js');
+  protoLoader = require('@grpc/proto-loader');
+
+  shopProto = _loadProto(MAIN_PROTO_PATH, grpc, protoLoader).hipstershop;
+  healthProto = _loadProto(HEALTH_PROTO_PATH, grpc, protoLoader).grpc.health.v1;
+
   logger.info(`Starting gRPC server on port ${PORT}...`);
   const server = new grpc.Server();
-  server.addService(shopProto.CurrencyService.service, {getSupportedCurrencies, convert});
-  server.addService(healthProto.Health.service, {check});
+  server.addService(shopProto.CurrencyService.service, { getSupportedCurrencies, convert });
+  server.addService(healthProto.Health.service, { check });
 
   server.bindAsync(
     `[::]:${PORT}`,
     grpc.ServerCredentials.createInsecure(),
-    function() {
+    function () {
       logger.info(`CurrencyService gRPC server started on port ${PORT}`);
       server.start();
-    },
-   );
+    }
+  );
 }
 
-main();
+module.exports = { createCurrencyClient, main };
+
+if (process.env.CURRENCY_SERVICE_DISABLE_AUTOSTART !== '1') {
+  try {
+    main();
+  } catch (err) {
+    if (require.main === module) {
+      throw err;
+    }
+  }
+}
