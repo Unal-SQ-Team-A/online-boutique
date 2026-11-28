@@ -40,9 +40,16 @@ jobs:
       - name: Run Mutation Testing (Stryker.NET if configured)
         working-directory: ${{ inputs.working_dir }}
         run: |
-          if [ "${{ inputs.run_mutation }}" = "true" ] && [ -f stryker-config.json ]; then
+          # The Stryker config may live next to the component tests (it must run with those tests, not the solution's).
+          STRYKER_DIR=""
+          for d in . component-tests; do
+            [ -f "$d/stryker-config.json" ] && STRYKER_DIR="$d" && break
+          done
+          if [ "${{ inputs.run_mutation }}" = "true" ] && [ -n "$STRYKER_DIR" ]; then
             dotnet tool restore || dotnet tool install -g dotnet-stryker
-            dotnet stryker | tee reports/stryker-report.txt || true
+            export PATH="$PATH:$HOME/.dotnet/tools"
+            (cd "$STRYKER_DIR" && dotnet stryker) | tee reports/stryker-report.txt || true
+            [ -d "$STRYKER_DIR/StrykerOutput" ] && cp -r "$STRYKER_DIR/StrykerOutput" reports/ || true
           else
             echo "Sin configuración de mutación (stryker-config.json) en ${{ inputs.working_dir }}." | tee reports/stryker-report.txt
           fi
