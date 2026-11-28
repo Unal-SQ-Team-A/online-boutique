@@ -32,3 +32,4 @@ gha-creds-*.json
 StrykerOutput/
 TestResults/
 coverage/
+.venv-tests/
